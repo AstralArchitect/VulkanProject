@@ -10,9 +10,14 @@ const std::vector<char const*> validationLayers = {
 };
 
 const std::vector<Vertex> vertices = {
-    {{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
-    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+
+const std::vector<uint16_t> indices = {
+    0, 1, 2, 2, 3, 0
 };
 
 #ifdef NDEBUG
@@ -67,6 +72,7 @@ void HelloTriangleApplication::initVulkan() {
     createGraphicsPipeline();
     createCommandPool();
     createVertexBuffer();
+    createIndexBuffer();
     createCommandBuffers();
     createSyncObjects();
 }
@@ -407,27 +413,36 @@ void HelloTriangleApplication::createSyncObjects() {
 void HelloTriangleApplication::createVertexBuffer() {
     vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
 
-    vk::BufferCreateInfo stagingInfo{ .size = bufferSize, .usage = vk::BufferUsageFlagBits::eTransferSrc, .sharingMode = vk::SharingMode::eExclusive };
-    vk::raii::Buffer stagingBuffer(device, stagingInfo);
-    vk::MemoryRequirements memRequirementsStaging = stagingBuffer.getMemoryRequirements();
-    vk::MemoryAllocateInfo memoryAllocateInfoStaging{  .allocationSize = memRequirementsStaging.size, .memoryTypeIndex = findMemoryType(memRequirementsStaging.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, physicalDevice) };
-    vk::raii::DeviceMemory stagingBufferMemory(device, memoryAllocateInfoStaging);
+    auto [stagingBuffer, stagingBufferMemory] =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-    stagingBuffer.bindMemory(stagingBufferMemory, 0);
-    void* dataStaging = stagingBufferMemory.mapMemory(0, stagingInfo.size);
-    memcpy(dataStaging, vertices.data(), stagingInfo.size);
+    vk::MemoryRequirements memRequirementsStaging = stagingBuffer.getMemoryRequirements();
+
+    void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+    memcpy(dataStaging, vertices.data(), bufferSize);
     stagingBufferMemory.unmapMemory();
 
-    vk::BufferCreateInfo bufferInfo{ .size = bufferSize,  .usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, .sharingMode = vk::SharingMode::eExclusive };
-    vertexBuffer = vk::raii::Buffer(device, bufferInfo);
+    std::tie(vertexBuffer, vertexBufferMemory) =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-    vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
-    vk::MemoryAllocateInfo memoryAllocateInfo{  .allocationSize = memRequirements.size, .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal, physicalDevice) };
-    vertexBufferMemory = vk::raii::DeviceMemory( device, memoryAllocateInfo );
+    copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+}
 
-    vertexBuffer.bindMemory( *vertexBufferMemory, 0 );
+void HelloTriangleApplication::createIndexBuffer()
+{
+	vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
 
-    copyBuffer(stagingBuffer, vertexBuffer, stagingInfo.size);
+	auto [stagingBuffer, stagingBufferMemory] =
+	    createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+	void *data = stagingBufferMemory.mapMemory(0, bufferSize);
+	memcpy(data, indices.data(), (size_t) bufferSize);
+	stagingBufferMemory.unmapMemory();
+
+	std::tie(indexBuffer, indexBufferMemory) =
+	    createBuffer(bufferSize, vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+	copyBuffer(stagingBuffer, indexBuffer, bufferSize);
 }
 
 void HelloTriangleApplication::cleanupSwapChain()

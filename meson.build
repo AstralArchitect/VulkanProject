@@ -1,6 +1,10 @@
-project('Vulkan-Project', 'c', 'cpp', 
-  version : '0.1.0', 
-  default_options: ['cpp_std=c++20'])
+project(
+    'Vulkan-Project',
+    'c',
+    'cpp',
+    version: '0.1.0',
+    default_options: ['cpp_std=c++20', 'default_library=static'],
+)
 
 cpp_compiler = meson.get_compiler('cpp')
 
@@ -8,7 +12,7 @@ cpp_compiler = meson.get_compiler('cpp')
 if cpp_compiler.get_id() == 'gcc'
     add_global_arguments('-std=gnu++20', language: 'cpp')
 elif cpp_compiler.get_id() == 'msvc'
-    add_global_arguments('/W2', language: 'cpp') 
+    add_global_arguments('/W2', language: 'cpp')
 endif
 
 # --- Chemins des sources ---
@@ -18,7 +22,7 @@ tools_dir = cpp_dir + 'tools/'
 cpp_sources = [
     cpp_dir + 'main.cc',
     cpp_dir + 'applicationInitFunctions.cc',
-    cpp_dir + 'initUtilities.cc'
+    cpp_dir + 'initUtilities.cc',
 ]
 
 sources = cpp_sources
@@ -37,16 +41,12 @@ glm_dep = dependency('glm')
 include_dir = include_directories('Include')
 
 # --- Exécutable final ---
-executable('main', 
-    sources: sources, 
-    include_directories: include_dir, 
-    dependencies: [
-        vulkan_dep, 
-        glfw_dep, 
-        glm_dep
-    ]
+executable(
+    'main',
+    sources: sources,
+    include_directories: include_dir,
+    dependencies: [vulkan_dep, glfw_dep, glm_dep],
 )
-
 
 # --- Compiler les shaders ---
 # 1. Trouver l'exécutable slangc sur le système
@@ -58,15 +58,17 @@ custom_target(
     input: 'res/shader.slang',
     output: 'shader.spv',
     command: [
-        slangc, 
-        '@INPUT@',         # Le fichier source (res/shader.slang)
+        slangc,
+        '@INPUT@', # Le fichier source (res/shader.slang)
         '-target', 'spirv', # On spécifie qu'on veut du SPIR-V pour Vulkan
         '-profile', 'spirv_1_4',
         '-emit-spirv-directly',
         '-fvk-use-entrypoint-name',
         '-entry', 'vertMain',
         '-entry', 'fragMain',
-        '-o', '@OUTPUT@'   # Le fichier de destination généré par Meson
+        '-o', '@OUTPUT@' # Le fichier de destination généré par Meson
+,
     ],
     build_by_default: true # Force la compilation même si l'exécutable C++ n'en dépend pas directement
+,
 )

@@ -37,6 +37,7 @@ struct Vertex
 };
 
 extern const std::vector<Vertex> vertices;
+extern const std::vector<uint16_t> indices;
 
 class HelloTriangleApplication {
 public:
@@ -75,6 +76,8 @@ private:
 
     vk::raii::Buffer vertexBuffer = nullptr;
     vk::raii::DeviceMemory vertexBufferMemory = nullptr;
+    vk::raii::Buffer indexBuffer        = nullptr;
+    vk::raii::DeviceMemory indexBufferMemory  = nullptr;
 
     std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
@@ -102,11 +105,12 @@ private:
     void drawFrame();
     void createSyncObjects();
     void createVertexBuffer();
+    void createIndexBuffer();
 
     void recreateSwapChain();
     void cleanupSwapChain();
 
-    void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties, vk::raii::Buffer& buffer, vk::raii::DeviceMemory& bufferMemory);
+    std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties);
     void copyBuffer(vk::raii::Buffer & srcBuffer, vk::raii::Buffer & dstBuffer, vk::DeviceSize size);
     
     // Méthodes utilitaires

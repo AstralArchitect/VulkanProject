@@ -80,13 +80,15 @@ static inline uint32_t findMemoryTypeStatic(uint32_t typeFilter, vk::MemoryPrope
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void HelloTriangleApplication::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties, vk::raii::Buffer& buffer, vk::raii::DeviceMemory& bufferMemory) {
-    vk::BufferCreateInfo bufferInfo{ .size = size, .usage = usage, .sharingMode = vk::SharingMode::eExclusive };
-    buffer = vk::raii::Buffer(device, bufferInfo);
-    vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
-    vk::MemoryAllocateInfo allocInfo{ .allocationSize = memRequirements.size, .memoryTypeIndex = findMemoryTypeStatic(memRequirements.memoryTypeBits, properties, physicalDevice) };
-    bufferMemory = vk::raii::DeviceMemory(device, allocInfo);
-    buffer.bindMemory(*bufferMemory, 0);
+std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> HelloTriangleApplication::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties)
+{
+  vk::BufferCreateInfo   bufferInfo{.size = size, .usage = usage, .sharingMode = vk::SharingMode::eExclusive};
+  vk::raii::Buffer       buffer          = vk::raii::Buffer(device, bufferInfo);
+  vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
+  vk::MemoryAllocateInfo allocInfo{.allocationSize = memRequirements.size, .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties, physicalDevice)};
+  vk::raii::DeviceMemory bufferMemory = vk::raii::DeviceMemory(device, allocInfo);
+  buffer.bindMemory(*bufferMemory, 0);
+  return {std::move(buffer), std::move(bufferMemory)};
 }
 
 void HelloTriangleApplication::copyBuffer(vk::raii::Buffer & srcBuffer, vk::raii::Buffer & dstBuffer, vk::DeviceSize size) {
