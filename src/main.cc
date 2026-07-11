@@ -8,6 +8,8 @@
 
 #include <iostream>
 
+#include <chrono>
+
 #include "HelloTriangleApplication.hpp"
 
 void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
@@ -28,15 +30,26 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
         vk::ImageAspectFlagBits::eColor);
 
     // Transition depth image to depth attachment optimal layout
-    transition_image_layout(&depthImage, vk::ImageLayout::eUndefined,
-                            vk::ImageLayout::eDepthAttachmentOptimal,
-                            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
-                            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
-                            vk::PipelineStageFlagBits2::eEarlyFragmentTests |
-                                vk::PipelineStageFlagBits2::eLateFragmentTests,
-                            vk::PipelineStageFlagBits2::eEarlyFragmentTests |
-                                vk::PipelineStageFlagBits2::eLateFragmentTests,
-                            vk::ImageAspectFlagBits::eDepth);
+    transition_image_layout(
+        &depthImage, vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eDepthAttachmentOptimal,
+        vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+            vk::PipelineStageFlagBits2::eLateFragmentTests,
+        vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+            vk::PipelineStageFlagBits2::eLateFragmentTests,
+        vk::ImageAspectFlagBits::eDepth);
+
+    // Transition color image to color attachment optimal layout
+    transition_image_layout(
+        &colorImage, vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        {},                                                 // srcAccessMask
+        vk::AccessFlagBits2::eColorAttachmentWrite,         // dstAccessMask
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // dstStage
+        vk::ImageAspectFlagBits::eColor);
 
     vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.f);
     vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
@@ -49,8 +62,11 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
         .clearValue = clearDepth};
 
     vk::RenderingAttachmentInfo attachmentInfo = {
-        .imageView = swapChainImageViews[imageIndex],
+        .imageView = *colorImageView,
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .resolveMode = vk::ResolveModeFlagBits::eAverage,
+        .resolveImageView = *swapChainImageViews[imageIndex],
+        .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eStore,
         .clearValue = clearColor};
@@ -106,7 +122,7 @@ void HelloTriangleApplication::updateUniformBuffer(uint32_t currentImage)
 
     UniformBufferObject ubo{};
     ubo.model = glm::mat4(1.f);
-    ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(.0f, 0.f, 1.f));
+    ubo.model = rotate(glm::mat4(1.0f), sin(time) / 2.0f * glm::radians(90.0f), glm::vec3(.0f, 0.f, 1.f));
     ubo.view = lookAt(glm::vec3(2.f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
                       glm::vec3(0.0f, 0.0f, 1.0f));
 

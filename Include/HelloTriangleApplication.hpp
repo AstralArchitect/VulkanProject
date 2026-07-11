@@ -29,8 +29,6 @@ import vulkan_hpp;
 #include <tiny_obj_loader.h>
 #endif
 
-#include <chrono>
-
 // --- Constantes et variables globales ---
 static constexpr uint32_t WIDTH = 800;
 static constexpr uint32_t HEIGHT = 600;
@@ -142,6 +140,7 @@ private:
     std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
     std::vector<void *> uniformBuffersMapped;
 
+    uint32_t mipLevels = 0;
     vk::raii::Image textureImage = nullptr;
     vk::raii::DeviceMemory textureImageMemory = nullptr;
     vk::raii::ImageView textureImageView = nullptr;
@@ -151,8 +150,14 @@ private:
     vk::raii::DeviceMemory depthImageMemory = nullptr;
     vk::raii::ImageView depthImageView = nullptr;
 
+    vk::raii::Image colorImage = nullptr;
+    vk::raii::DeviceMemory colorImageMemory = nullptr;
+    vk::raii::ImageView colorImageView = nullptr;
+
     vk::raii::DescriptorPool descriptorPool = nullptr;
     std::vector<vk::raii::DescriptorSet> descriptorSets;
+
+    vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
 
     std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
@@ -183,8 +188,8 @@ private:
     void createCommandPool();
     void createCommandBuffers();
     
-    void transition_image_layout(uint32_t imageIndex, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::AccessFlags2 src_access_mask, vk::AccessFlags2 dst_access_mask, vk::PipelineStageFlags2 src_stage_mask, vk::PipelineStageFlags2 dst_stage_mask, vk::ImageAspectFlags image_aspect_flags);
-    void transition_image_layout(const vk::raii::Image *image, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::AccessFlags2 src_access_mask, vk::AccessFlags2 dst_access_mask, vk::PipelineStageFlags2 src_stage_mask, vk::PipelineStageFlags2 dst_stage_mask, vk::ImageAspectFlags image_aspect_flags);
+    void transition_image_layout(uint32_t imageIndex, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::AccessFlags2 src_access_mask, vk::AccessFlags2 dst_access_mask, vk::PipelineStageFlags2 src_stage_mask, vk::PipelineStageFlags2 dst_stage_mask, vk::ImageAspectFlags image_aspect_flags, uint32_t mipLevels = 1);
+    void transition_image_layout(const vk::raii::Image *image, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::AccessFlags2 src_access_mask, vk::AccessFlags2 dst_access_mask, vk::PipelineStageFlags2 src_stage_mask, vk::PipelineStageFlags2 dst_stage_mask, vk::ImageAspectFlags image_aspect_flags, uint32_t mipLevels = 1);
     
     void createSyncObjects();
     void createVertexBuffer();
@@ -217,12 +222,20 @@ private:
     vk::PresentModeKHR      chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes);
     vk::Extent2D            chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities);
     uint32_t                chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities);
-    std::pair<vk::raii::Image, vk::raii::DeviceMemory> createImage(uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties);
+
+    std::pair<vk::raii::Image, vk::raii::DeviceMemory> createImage(uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, vk::SampleCountFlagBits numSamples, uint32_t mipLevels = 1);
+    vk::raii::ImageView     createImageView(vk::Image const &image, vk::Format format, vk::ImageAspectFlags aspectFlags, uint32_t mipLevels = 1);
+   
     vk::raii::CommandBuffer beginSingleTimeCommands();
     void                    endSingleTimeCommands(vk::raii::CommandBuffer &&commandBuffer);
-    vk::raii::ImageView     createImageView(vk::Image const &image, vk::Format format, vk::ImageAspectFlags aspectFlags);
+   
     vk::Format              findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features);
     vk::Format              findDepthFormat();
+
+    vk::SampleCountFlagBits getMaxUsableSampleCount();
+
+    void generateMipmaps(vk::raii::CommandBuffer &commandBuffer, vk::raii::Image &image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
+    void createColorResources();
 
     [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char> &code) const;
 

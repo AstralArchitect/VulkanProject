@@ -144,3 +144,110 @@ uint32_t HelloTriangleApplication::chooseSwapMinImageCount(vk::SurfaceCapabiliti
     vk::raii::ShaderModule shaderModule{ device, createInfo };
     return shaderModule;
 }
+
+vk::raii::ImageView HelloTriangleApplication::createImageView(vk::Image const &image, vk::Format format, vk::ImageAspectFlags aspectFlags, uint32_t mipLevels)
+{
+    vk::ImageViewCreateInfo viewInfo{.image = image,
+                                     .viewType = vk::ImageViewType::e2D,
+                                     .format = format,
+                                     .subresourceRange = {.aspectMask = aspectFlags,
+                                                          .baseMipLevel = 0,
+                                                          .levelCount = mipLevels,
+                                                          .baseArrayLayer = 0,
+                                                          .layerCount = 1}};
+    return vk::raii::ImageView(device, viewInfo);
+}
+
+std::pair<vk::raii::Image, vk::raii::DeviceMemory> HelloTriangleApplication::createImage(
+    uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+    vk::MemoryPropertyFlags properties, vk::SampleCountFlagBits numSamples, uint32_t mipLevels)
+{
+    vk::ImageCreateInfo imageInfo{
+        .imageType = vk::ImageType::e2D,
+        .format = format,
+        .extent = {width, height, 1},
+        .mipLevels = mipLevels,
+        .arrayLayers = 1,
+        .samples = numSamples,
+        .tiling = tiling,
+        .usage = usage,
+        .sharingMode = vk::SharingMode::eExclusive};
+
+    vk::raii::Image image = vk::raii::Image(device, imageInfo);
+
+    vk::MemoryRequirements memRequirements = image.getMemoryRequirements();
+    vk::MemoryAllocateInfo allocInfo{
+        .allocationSize = memRequirements.size,
+        .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties, physicalDevice)};
+    vk::raii::DeviceMemory imageMemory = vk::raii::DeviceMemory(device, allocInfo);
+    image.bindMemory(imageMemory, 0);
+
+    return {std::move(image), std::move(imageMemory)};
+}
+
+vk::Format HelloTriangleApplication::findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
+{
+    for (const auto format : candidates)
+    {
+        vk::FormatProperties props = physicalDevice.getFormatProperties(format);
+        if (
+            ((tiling == vk::ImageTiling::eLinear) && ((props.linearTilingFeatures & features) == features)) ||
+            ((tiling == vk::ImageTiling::eOptimal) && ((props.optimalTilingFeatures & features) == features)))
+        {
+            return format;
+        }
+    }
+
+    throw std::runtime_error("failed to find supported format!");
+}
+
+vk::Format HelloTriangleApplication::findDepthFormat()
+{
+    return findSupportedFormat({vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint},
+                               vk::ImageTiling::eOptimal,
+                               vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+}
+
+vk::raii::CommandBuffer HelloTriangleApplication::beginSingleTimeCommands()
+{
+    vk::CommandBufferAllocateInfo allocInfo{
+        .commandPool = commandPool,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1};
+    vk::raii::CommandBuffer commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
+
+    vk::CommandBufferBeginInfo beginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit};
+    commandBuffer.begin(beginInfo);
+
+    return std::move(commandBuffer);
+}
+
+void HelloTriangleApplication::endSingleTimeCommands(vk::raii::CommandBuffer &&commandBuffer)
+{
+    commandBuffer.end();
+
+    vk::SubmitInfo submitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commandBuffer};
+    graphicsQueue.submit(submitInfo, nullptr);
+    graphicsQueue.waitIdle();
+}
+
+vk::SampleCountFlagBits HelloTriangleApplication::getMaxUsableSampleCount() {
+    vk::PhysicalDeviceProperties physicalDeviceProperties = physicalDevice.getProperties();
+
+    vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+    if (counts & vk::SampleCountFlagBits::e64) { return vk::SampleCountFlagBits::e64; }
+    if (counts & vk::SampleCountFlagBits::e32) { return vk::SampleCountFlagBits::e32; }
+    if (counts & vk::SampleCountFlagBits::e16) { return vk::SampleCountFlagBits::e16; }
+    if (counts & vk::SampleCountFlagBits::e8) { return vk::SampleCountFlagBits::e8; }
+    if (counts & vk::SampleCountFlagBits::e4) { return vk::SampleCountFlagBits::e4; }
+    if (counts & vk::SampleCountFlagBits::e2) { return vk::SampleCountFlagBits::e2; }
+
+    return vk::SampleCountFlagBits::e1;
+}
+
+void HelloTriangleApplication::createColorResources() {
+    vk::Format colorFormat = swapChainSurfaceFormat.format;
+
+    std::tie(colorImage, colorImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, colorFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
+    colorImageView = createImageView(*colorImage, colorFormat, vk::ImageAspectFlagBits::eColor);
+}
