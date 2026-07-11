@@ -2,6 +2,10 @@
 #include "stb_image.h"
 #define STB_IMAGE
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
+#define TINYOBJLOADER
+
 #include <iostream>
 
 #include "HelloTriangleApplication.hpp"
@@ -60,17 +64,14 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.beginRendering(renderingInfo);
 
-    commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                               *graphicsPipeline);
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
 
     commandBuffer.bindDescriptorSets(
         vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0,
         *descriptorSets[frameIndex], // On bind le set de la frame actuelle
         nullptr);
 
-    commandBuffer.setViewport(
-        0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width),
-                        static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
+    commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
     commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
 
     commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
@@ -105,8 +106,7 @@ void HelloTriangleApplication::updateUniformBuffer(uint32_t currentImage)
 
     UniformBufferObject ubo{};
     ubo.model = glm::mat4(1.f);
-    // ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
-    // glm::vec3(.0f, 0.f, 1.f));
+    ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(.0f, 0.f, 1.f));
     ubo.view = lookAt(glm::vec3(2.f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
                       glm::vec3(0.0f, 0.0f, 1.0f));
 

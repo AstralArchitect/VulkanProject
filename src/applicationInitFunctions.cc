@@ -2,14 +2,14 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <unordered_map>
 
 #include "HelloTriangleApplication.hpp"
 
 const std::vector<char const *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
-const std::vector<Vertex> vertices;
-
-const std::vector<uint32_t> indices;
+std::vector<Vertex> vertices;
+std::vector<uint32_t> indices;
 
 #ifdef NDEBUG
 constexpr bool enableValidationLayers = false;
@@ -17,12 +17,10 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif
 
-bool isDeviceSuitable(vk::raii::PhysicalDevice const &physicalDevice,
-                      std::vector<const char *> const &requiredDeviceExtension);
+bool isDeviceSuitable(vk::raii::PhysicalDevice const &physicalDevice, std::vector<const char *> const &requiredDeviceExtension);
 std::vector<char> readFile(const std::string &filename);
 
-uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties,
-                        vk::raii::PhysicalDevice const &physicalDevice);
+uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties, vk::raii::PhysicalDevice const &physicalDevice);
 
 static void framebufferResizeCallback(GLFWwindow *window, int width, int height)
 {
@@ -33,7 +31,9 @@ static void framebufferResizeCallback(GLFWwindow *window, int width, int height)
 vk::raii::CommandBuffer HelloTriangleApplication::beginSingleTimeCommands()
 {
     vk::CommandBufferAllocateInfo allocInfo{
-        .commandPool = commandPool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = 1};
+        .commandPool = commandPool, 
+        .level = vk::CommandBufferLevel::ePrimary, 
+        .commandBufferCount = 1};
     vk::raii::CommandBuffer commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
 
     vk::CommandBufferBeginInfo beginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit};
@@ -95,6 +95,8 @@ void HelloTriangleApplication::initVulkan()
     createGraphicsPipeline();
     createCommandPool();
     createCommandBuffers();
+
+    loadModel();
 
     createVertexBuffer();
     createIndexBuffer();
@@ -344,7 +346,7 @@ void HelloTriangleApplication::createDescriptorSetLayout()
 
 void HelloTriangleApplication::createGraphicsPipeline()
 {
-    vk::raii::ShaderModule shaderModule = createShaderModule(readFile("build/shader.spv"));
+    vk::raii::ShaderModule shaderModule = createShaderModule(readFile("builddir/shader.spv"));
 
     vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
         .stage = vk::ShaderStageFlagBits::eVertex, .module = shaderModule, .pName = "vertMain"};
@@ -563,6 +565,50 @@ void HelloTriangleApplication::createSyncObjects()
     {
         presentCompleteSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());
         inFlightFences.emplace_back(device, vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
+    }
+}
+
+void HelloTriangleApplication::loadModel()
+{
+    tinyobj::attrib_t                attrib;
+	std::vector<tinyobj::shape_t>    shapes;
+	std::vector<tinyobj::material_t> materials;
+	std::string                      warn, err;
+
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str()))
+	{
+		throw std::runtime_error(warn + err);
+	}
+
+    std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+
+    for (const auto& shape : shapes)
+    {
+        for (const auto& index : shape.mesh.indices)
+        {
+            Vertex vertex{};
+
+            vertex.pos = {
+                attrib.vertices[3 * index.vertex_index + 0],
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]
+            };
+
+            vertex.texCoord = {
+                attrib.texcoords[2 * index.texcoord_index + 0],
+                1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+            };
+
+            vertex.color = {1.0f, 1.0f, 1.0f};
+
+            auto [it, inserted] = uniqueVertices.insert({vertex, static_cast<uint32_t>(vertices.size())});
+			if (inserted)
+			{
+                vertices.push_back(vertex);
+			}
+
+			indices.push_back(it->second);
+        }
     }
 }
 

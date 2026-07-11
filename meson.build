@@ -67,9 +67,7 @@ custom_target(
         '-fvk-use-entrypoint-name',
         '-entry', 'vertMain',
         '-entry', 'fragMain',
-        '-o', '@OUTPUT@' # Le fichier de destination généré par Meson
-,
+        '-o', '@OUTPUT@', # Le fichier de destination généré par Meson
     ],
-    build_by_default: true # Force la compilation même si l'exécutable C++ n'en dépend pas directement
-,
+    build_by_default: true, # Force la compilation même si l'exécutable C++ n'en dépend pas directement
 )
