@@ -2,7 +2,8 @@ builddir/
 packagecache/
 glfw-*/
 glm-*/
-tinygltf-*/
+tinyobjloader*/
+.wraplock
 res/blender_models/*.blend1
 .vscode/
 .cache/
