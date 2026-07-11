@@ -22,6 +22,9 @@ import vulkan_hpp;
 #include "stb_image.h"
 #endif
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
+
 #include <chrono>
 
 // --- Constantes et variables globales ---

@@ -1,0 +1,8 @@
+builddir/
+packagecache/
+glfw-*/
+glm-*/
+tinygltf-*/
+res/blender_models/*.blend1
+.vscode/
+.cache/

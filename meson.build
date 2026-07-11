@@ -36,6 +36,7 @@ vulkan_dep = dependency('vulkan')
 # Meson les trouvera s'ils sont dans ton PATH ou si tu utilises des Wraps.
 glfw_dep = dependency('glfw3')
 glm_dep = dependency('glm')
+tinyobjloader_dep = dependency('tinyobjloader')
 
 # --- Inclusion des dossiers de headers ---
 include_dir = include_directories('Include')
@@ -45,7 +46,7 @@ executable(
     'main',
     sources: sources,
     include_directories: include_dir,
-    dependencies: [vulkan_dep, glfw_dep, glm_dep],
+    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinyobjloader_dep],
 )
 
 # --- Compiler les shaders ---
