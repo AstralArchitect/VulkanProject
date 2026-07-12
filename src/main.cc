@@ -6,11 +6,11 @@
 
 #include <chrono>
 
-#include "HelloTriangleApplication.hpp"
+#include "vulkan_app.hpp"
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
-void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
+void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 {
     auto &commandBuffer = commandBuffers[frameIndex];
 
@@ -88,8 +88,8 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 1, *textureManager.getDescriptorSet(), nullptr);
 
-    if (mainModel) {
-        mainModel->draw(commandBuffer, pipelineLayout);
+    for (auto &model : models) {
+        model->draw(commandBuffer, pipelineLayout);
     }
 
     commandBuffer.endRendering();
@@ -108,7 +108,7 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
     commandBuffer.end();
 }
 
-void HelloTriangleApplication::updateUniformBuffer(uint32_t currentImage)
+void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 {
     static auto startTime = std::chrono::high_resolution_clock::now();
     auto currentTime = std::chrono::high_resolution_clock::now();
@@ -127,7 +127,7 @@ void HelloTriangleApplication::updateUniformBuffer(uint32_t currentImage)
     memcpy(cameraUniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }
 
-void HelloTriangleApplication::drawFrame()
+void VulkanApp::drawFrame()
 {
     // Note: inFlightFences, presentCompleteSemaphores, and commandBuffers are
     // indexed by frameIndex,
@@ -193,7 +193,30 @@ void HelloTriangleApplication::drawFrame()
     frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void HelloTriangleApplication::mainLoop()
+void VulkanApp::loadModels()
+{
+    models.push_back(std::make_unique<GltfModel>(
+        "res/models/horloge.glb",
+        device,
+        physicalDevice,
+        commandPool,
+        graphicsQueue,
+        textureManager
+    ));
+
+    models.push_back(std::make_unique<GltfModel>(
+        "res/models/plan.glb",
+        device,
+        physicalDevice,
+        commandPool,
+        graphicsQueue,
+        textureManager
+    ));
+
+    models[1]->modelTransform = glm::scale(models[1]->modelTransform, glm::vec3(10.f));
+}
+
+void VulkanApp::mainLoop()
 {
     while (!glfwWindowShouldClose(window))
     {
@@ -217,7 +240,8 @@ int main()
 {
     try
     {
-        HelloTriangleApplication app;
+        VulkanApp app;
+        app.init();
         app.run();
     }
     catch (const std::exception &e)

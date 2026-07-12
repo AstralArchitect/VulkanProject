@@ -1,4 +1,4 @@
-#include "HelloTriangleApplication.hpp"
+#include "vulkan_app.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -83,14 +83,14 @@ static inline uint32_t findMemoryTypeStatic(uint32_t typeFilter, vk::MemoryPrope
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-vk::SurfaceFormatKHR HelloTriangleApplication::chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats)
+vk::SurfaceFormatKHR VulkanApp::chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats)
 {
     assert(!availableFormats.empty());
     const auto formatIt = std::ranges::find_if(availableFormats, [](const auto &format) { return format.format == vk::Format::eB8G8R8A8Srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear; });
     return availableFormats[0];
 }
 
-vk::PresentModeKHR HelloTriangleApplication::chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes)
+vk::PresentModeKHR VulkanApp::chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes)
 {
     assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
     return std::ranges::any_of(availablePresentModes, [](const vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; }) ?
@@ -98,7 +98,7 @@ vk::PresentModeKHR HelloTriangleApplication::chooseSwapPresentMode(std::vector<v
             vk::PresentModeKHR::eFifo;
 }
 
-vk::Extent2D HelloTriangleApplication::chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities)
+vk::Extent2D VulkanApp::chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities)
 {
     if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
     {
@@ -113,7 +113,7 @@ vk::Extent2D HelloTriangleApplication::chooseSwapExtent(vk::SurfaceCapabilitiesK
     };
 }
 
-uint32_t HelloTriangleApplication::chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities)
+uint32_t VulkanApp::chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities)
 {
     auto minImageCount = std::max(3u, surfaceCapabilities.minImageCount);
     if ((0 < surfaceCapabilities.maxImageCount) && (surfaceCapabilities.maxImageCount < minImageCount))
@@ -123,14 +123,14 @@ uint32_t HelloTriangleApplication::chooseSwapMinImageCount(vk::SurfaceCapabiliti
     return minImageCount;
 }
 
-[[nodiscard]] vk::raii::ShaderModule HelloTriangleApplication::createShaderModule(const std::vector<char>& code) const
+[[nodiscard]] vk::raii::ShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) const
 {
     vk::ShaderModuleCreateInfo createInfo{ .codeSize = code.size() * sizeof(char), .pCode = reinterpret_cast<const uint32_t*>(code.data()) };
     vk::raii::ShaderModule shaderModule{ device, createInfo };
     return shaderModule;
 }
 
-vk::Format HelloTriangleApplication::findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
+vk::Format VulkanApp::findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
 {
     for (const auto format : candidates)
     {
@@ -146,14 +146,14 @@ vk::Format HelloTriangleApplication::findSupportedFormat(const std::vector<vk::F
     throw std::runtime_error("failed to find supported format!");
 }
 
-vk::Format HelloTriangleApplication::findDepthFormat()
+vk::Format VulkanApp::findDepthFormat()
 {
     return findSupportedFormat({vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint},
                                vk::ImageTiling::eOptimal,
                                vk::FormatFeatureFlagBits::eDepthStencilAttachment);
 }
 
-vk::SampleCountFlagBits HelloTriangleApplication::getMaxUsableSampleCount() {
+vk::SampleCountFlagBits VulkanApp::getMaxUsableSampleCount() {
     vk::PhysicalDeviceProperties physicalDeviceProperties = physicalDevice.getProperties();
 
     vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
@@ -167,7 +167,7 @@ vk::SampleCountFlagBits HelloTriangleApplication::getMaxUsableSampleCount() {
     return vk::SampleCountFlagBits::e1;
 }
 
-void HelloTriangleApplication::createColorResources() {
+void VulkanApp::createColorResources() {
     vk::Format colorFormat = swapChainSurfaceFormat.format;
 
     std::tie(colorImage, colorImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, colorFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);

@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-#include "HelloTriangleApplication.hpp"
+#include "vulkan_app.hpp"
 
 #include "vulkan_utils.hpp"
 
@@ -21,19 +21,23 @@ std::vector<char> readFile(const std::string &filename);
 
 static void framebufferResizeCallback(GLFWwindow *window, int width, int height)
 {
-    auto app = reinterpret_cast<HelloTriangleApplication *>(glfwGetWindowUserPointer(window));
+    auto app = reinterpret_cast<VulkanApp *>(glfwGetWindowUserPointer(window));
     app->framebufferResized = true;
 }
 
-void HelloTriangleApplication::run()
+void VulkanApp::init()
 {
     initWindow();
     initVulkan();
+}
+
+void VulkanApp::run()
+{
     mainLoop();
     cleanup();
 }
 
-void HelloTriangleApplication::initWindow()
+void VulkanApp::initWindow()
 {
     if (!glfwInit())
     {
@@ -53,7 +57,7 @@ void HelloTriangleApplication::initWindow()
     }
 }
 
-void HelloTriangleApplication::initVulkan()
+void VulkanApp::initVulkan()
 {   
     createInstance();
     setupDebugMessenger();
@@ -72,13 +76,7 @@ void HelloTriangleApplication::initVulkan()
     createDescriptorSetLayout();
     createGraphicsPipeline();
 
-    mainModel = std::make_unique<GltfModel>(
-        "res/models/horloge.glb",
-        device,
-        physicalDevice,
-        commandPool,
-        graphicsQueue,
-        textureManager);
+    loadModels();
 
     createUniformBuffers();
     createColorResources();
@@ -90,7 +88,7 @@ void HelloTriangleApplication::initVulkan()
 }
 
 
-void HelloTriangleApplication::createInstance()
+void VulkanApp::createInstance()
 {
     vk::ApplicationInfo appInfo;
 
@@ -148,7 +146,7 @@ void HelloTriangleApplication::createInstance()
     instance = vk::raii::Instance(context, createInfo);
 }
 
-void HelloTriangleApplication::populateDebugMessengerCreateInfo(vk::DebugUtilsMessengerCreateInfoEXT &createInfo)
+void VulkanApp::populateDebugMessengerCreateInfo(vk::DebugUtilsMessengerCreateInfoEXT &createInfo)
 {
     createInfo.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
                                  vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
@@ -159,7 +157,7 @@ void HelloTriangleApplication::populateDebugMessengerCreateInfo(vk::DebugUtilsMe
     createInfo.pfnUserCallback = reinterpret_cast<vk::PFN_DebugUtilsMessengerCallbackEXT>(debugCallback);
 }
 
-void HelloTriangleApplication::setupDebugMessenger()
+void VulkanApp::setupDebugMessenger()
 {
     if (!enableValidationLayers)
         return;
@@ -170,7 +168,7 @@ void HelloTriangleApplication::setupDebugMessenger()
     debugMessenger = vk::raii::DebugUtilsMessengerEXT(instance, createInfo);
 }
 
-VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApplication::debugCallback(
+VKAPI_ATTR VkBool32 VKAPI_CALL VulkanApp::debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData)
 {
@@ -179,7 +177,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApplication::debugCallback(
     return VK_FALSE;
 }
 
-void HelloTriangleApplication::pickPhysicalDevice()
+void VulkanApp::pickPhysicalDevice()
 {
     std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
 
@@ -202,7 +200,7 @@ void HelloTriangleApplication::pickPhysicalDevice()
     }
 }
 
-void HelloTriangleApplication::createLogicalDevice()
+void VulkanApp::createLogicalDevice()
 {
     std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
 
@@ -264,7 +262,7 @@ void HelloTriangleApplication::createLogicalDevice()
     graphicsQueue = vk::raii::Queue(device, graphicsIndex, 0);
 }
 
-void HelloTriangleApplication::createSurface()
+void VulkanApp::createSurface()
 {
     VkSurfaceKHR _surface;
     if (glfwCreateWindowSurface(*instance, window, nullptr, &_surface) != 0)
@@ -274,7 +272,7 @@ void HelloTriangleApplication::createSurface()
     surface = vk::raii::SurfaceKHR(instance, _surface);
 }
 
-void HelloTriangleApplication::createSwapChain()
+void VulkanApp::createSwapChain()
 {
     vk::SurfaceCapabilitiesKHR surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(*surface);
     swapChainExtent = chooseSwapExtent(surfaceCapabilities);
@@ -303,7 +301,7 @@ void HelloTriangleApplication::createSwapChain()
     swapChainImages = swapChain.getImages();
 }
 
-void HelloTriangleApplication::createImageViews()
+void VulkanApp::createImageViews()
 {
     assert(swapChainImageViews.empty());
     vk::ImageViewCreateInfo imageViewCreateInfo{.viewType = vk::ImageViewType::e2D,
@@ -323,7 +321,7 @@ void HelloTriangleApplication::createImageViews()
     }
 }
 
-void HelloTriangleApplication::createDescriptorSetLayout()
+void VulkanApp::createDescriptorSetLayout()
 {
     vk::DescriptorSetLayoutBinding uboLayoutBinding{.binding = 0,
                                                     .descriptorType = vk::DescriptorType::eUniformBuffer,
@@ -336,7 +334,7 @@ void HelloTriangleApplication::createDescriptorSetLayout()
     descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
 }
 
-void HelloTriangleApplication::createGraphicsPipeline()
+void VulkanApp::createGraphicsPipeline()
 {
     vk::raii::ShaderModule shaderModule = createShaderModule(readFile("builddir/shader.spv"));
 
@@ -435,14 +433,14 @@ void HelloTriangleApplication::createGraphicsPipeline()
         vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
 }
 
-void HelloTriangleApplication::createCommandPool()
+void VulkanApp::createCommandPool()
 {
     vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
                                        .queueFamilyIndex = queueIndex};
     commandPool = vk::raii::CommandPool(device, poolInfo);
 }
 
-void HelloTriangleApplication::createCommandBuffers()
+void VulkanApp::createCommandBuffers()
 {
     vk::CommandBufferAllocateInfo allocInfo{.commandPool = commandPool,
                                             .level = vk::CommandBufferLevel::ePrimary,
@@ -450,7 +448,7 @@ void HelloTriangleApplication::createCommandBuffers()
     commandBuffers = vk::raii::CommandBuffers(device, allocInfo);
 }
 
-void HelloTriangleApplication::transition_image_layout(
+void VulkanApp::transition_image_layout(
     uint32_t imageIndex, vk::ImageLayout old_layout,
     vk::ImageLayout new_layout, vk::AccessFlags2 src_access_mask,
     vk::AccessFlags2 dst_access_mask,
@@ -478,7 +476,7 @@ void HelloTriangleApplication::transition_image_layout(
     commandBuffers[frameIndex].pipelineBarrier2(dependency_info);
 }
 
-void HelloTriangleApplication::transition_image_layout(const vk::raii::Image *image, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::AccessFlags2 src_access_mask, vk::AccessFlags2 dst_access_mask, vk::PipelineStageFlags2 src_stage_mask, vk::PipelineStageFlags2 dst_stage_mask, vk::ImageAspectFlags image_aspect_flags, uint32_t mipLevels)
+void VulkanApp::transition_image_layout(const vk::raii::Image *image, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::AccessFlags2 src_access_mask, vk::AccessFlags2 dst_access_mask, vk::PipelineStageFlags2 src_stage_mask, vk::PipelineStageFlags2 dst_stage_mask, vk::ImageAspectFlags image_aspect_flags, uint32_t mipLevels)
 {
     vk::ImageMemoryBarrier2 barrier = {.srcStageMask = src_stage_mask,
                                        .srcAccessMask = src_access_mask,
@@ -538,7 +536,7 @@ void transitionImageLayout(vk::raii::CommandBuffer &commandBuffer, const vk::rai
     commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
 }
 
-void HelloTriangleApplication::createSyncObjects()
+void VulkanApp::createSyncObjects()
 {
     assert(presentCompleteSemaphores.empty() && renderFinishedSemaphores.empty() && inFlightFences.empty());
 
@@ -554,7 +552,7 @@ void HelloTriangleApplication::createSyncObjects()
     }
 }
 
-void HelloTriangleApplication::createUniformBuffers()
+void VulkanApp::createUniformBuffers()
 {
     // On nettoie les anciens buffers globaux s'ils existent (utile lors du redimensionnement de la fenêtre)
     cameraUniformBuffers.clear();
@@ -582,7 +580,7 @@ void HelloTriangleApplication::createUniformBuffers()
     }
 }
 
-void HelloTriangleApplication::createDepthResources()
+void VulkanApp::createDepthResources()
 {
     vk::Format depthFormat = findDepthFormat();
 
@@ -590,7 +588,7 @@ void HelloTriangleApplication::createDepthResources()
     depthImageView = VulkanUtils::createImageView(device, *depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
 }
 
-void HelloTriangleApplication::createDescriptorPool()
+void VulkanApp::createDescriptorPool()
 {
     // We need MAX_FRAMES_IN_FLIGHT descriptor sets
     std::array poolSize{
@@ -603,7 +601,7 @@ void HelloTriangleApplication::createDescriptorPool()
     descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
 }
 
-void HelloTriangleApplication::createDescriptorSets()
+void VulkanApp::createDescriptorSets()
 {
     // On crée les Layouts pour la caméra globale
     std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptorSetLayout);
@@ -638,13 +636,13 @@ void HelloTriangleApplication::createDescriptorSets()
     }
 }
 
-void HelloTriangleApplication::cleanupSwapChain()
+void VulkanApp::cleanupSwapChain()
 {
     swapChainImageViews.clear();
     swapChain = nullptr;
 }
 
-void HelloTriangleApplication::recreateSwapChain()
+void VulkanApp::recreateSwapChain()
 {
     int width = 0, height = 0;
     while (width == 0 || height == 0)
@@ -662,7 +660,7 @@ void HelloTriangleApplication::recreateSwapChain()
     createDepthResources();
 }
 
-void HelloTriangleApplication::cleanup()
+void VulkanApp::cleanup()
 {
     // RAII handles are automatically destroyed in the reverse order of their declaration.
     // Since 'device' is declared before the Vulkan resources, it will safely be destroyed last.
@@ -671,7 +669,7 @@ void HelloTriangleApplication::cleanup()
     glfwTerminate();
 }
 
-void HelloTriangleApplication::generateMipmaps(
+void VulkanApp::generateMipmaps(
     vk::raii::CommandBuffer &commandBuffer,
     vk::raii::Image &image,
     vk::Format imageFormat,

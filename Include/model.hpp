@@ -117,14 +117,13 @@ public:
         // commandBuffer.bindVertexBuffers(0, {*globalVertexBuffer}, {0}); // Supprimé, géré par primitive
         commandBuffer.bindIndexBuffer(*globalIndexBuffer, 0, vk::IndexType::eUint32);
 
-        // 2. Calcul de la matrice du modèle de base
-        glm::mat4 modelMatrix = getModelMatrix();
-
         // 3. On lance le dessin récursif sur les nœuds racines (root nodes)
         for (auto& node : rootNodes) {
-            node.draw(commandBuffer, pipelineLayout, modelMatrix, globalVertexBuffer);
+            node.draw(commandBuffer, pipelineLayout, modelTransform, globalVertexBuffer);
         }
     }
+
+    glm::mat4 modelTransform = glm::mat4(1.f);
 
     // Liste des meshes
     std::vector<GltfMesh> meshes;
@@ -142,23 +141,10 @@ private:
     // Les nœuds racines du glTF
     std::vector<GltfNode> rootNodes;
 
-    // Propriétés de transformation globales de l'objet
-    glm::vec3 position = {0.0f, 0.0f, 0.0f};
-    glm::vec3 rotation = {0.0f, 0.0f, 0.0f};
-    glm::vec3 scale = {1.0f, 1.0f, 1.0f};
-
-    glm::mat4 getModelMatrix() const {
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), position);
-        model = glm::rotate(model, rotation.x, {1.0f, 0.0f, 0.0f});
-        model = glm::rotate(model, rotation.y, {0.0f, 1.0f, 0.0f});
-        model = glm::rotate(model, rotation.z, {0.0f, 0.0f, 1.0f});
-        return glm::scale(model, scale);
-    }
-
     vk::raii::Device* device = nullptr;
-    vk::raii::PhysicalDevice *physicalDevice;
-    vk::raii::CommandPool *commandPool;
-    vk::raii::Queue *graphicsQueue;
+    vk::raii::PhysicalDevice *physicalDevice = nullptr;
+    vk::raii::CommandPool *commandPool = nullptr;
+    vk::raii::Queue *graphicsQueue = nullptr;
 
     // Méthodes internes de génération
     void createVertexBuffer();

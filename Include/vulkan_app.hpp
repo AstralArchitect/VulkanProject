@@ -34,12 +34,13 @@ extern const int MAX_FRAMES_IN_FLIGHT;
 const std::string MODEL_PATH = "res/models/horloge.glb";
 const std::string TEXTURE_PATH = "res/textures/viking_room.png";
 
-class HelloTriangleApplication
+class VulkanApp
 {
 public:
     bool framebufferResized = false;
-    void run();
 
+    void init();
+    void run();
 private:
     std::vector<const char *> requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName, "VK_EXT_extended_dynamic_state", "VK_EXT_vertex_input_dynamic_state"};
@@ -72,7 +73,7 @@ private:
     vk::raii::CommandPool commandPool = nullptr;
     std::vector<vk::raii::CommandBuffer> commandBuffers;
 
-    std::unique_ptr<GltfModel> mainModel;
+    std::vector<std::unique_ptr<GltfModel>> models;
 
     TextureManager textureManager;
 
@@ -89,7 +90,7 @@ private:
         glm::mat4 proj;
     };
 
-    // Dans la classe HelloTriangleApplication :
+    // Dans la classe VulkanApp :
     std::vector<vk::raii::Buffer> cameraUniformBuffers;
     std::vector<vk::raii::DeviceMemory> cameraUniformBuffersMemory;
     std::vector<void*> cameraUniformBuffersMapped;
@@ -138,6 +139,8 @@ private:
     void createDescriptorSets();
     
     void createDepthResources();
+
+    void loadModels();
 
     void drawFrame();
     void updateUniformBuffer(uint32_t currentImage);
