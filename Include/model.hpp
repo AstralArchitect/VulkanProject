@@ -26,18 +26,39 @@ import vulkan_hpp;
 #include <tiny_gltf.h>
 #endif
 
-class GltfPrimitive {
-public:
-    // Plus besoin de Vulkan ici ! Juste les infos de découpe du Mega-Buffer.
-    GltfPrimitive(uint32_t firstIndex, uint32_t indexCount, vk::DeviceSize byteOffset, int materialIndex, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes);
+class TextureManager;
 
-    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::Buffer& globalVertexBuffer) const;
+class GltfMaterial {
+public:
+    GltfMaterial(const tinygltf::Model& root, tinygltf::Material material, bool hasNormals, TextureManager& textureManager);
+    GltfMaterial() = default;
+    ~GltfMaterial() = default;
+
+    void bind(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, glm::mat4 modelMatrix) const;
 
 private:
+    uint8_t features; // Bitfield for features for this material
+
+    double basecolor[3];
+    double metallic_factor;
+    double roughness_factor;
+
+    std::optional<uint32_t> baseColorTextureIndex;
+    std::optional<uint32_t> metallicRoughnessTextureIndex;
+};
+
+class GltfPrimitive {
+public:
+    GltfPrimitive(const tinygltf::Model& root, uint32_t primfirstIndex, uint32_t primIndexCount, vk::DeviceSize primByteOffset, tinygltf::Material material, bool hasNormals, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes, TextureManager& textureManager);
+
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, vk::raii::Buffer& globalVertexBuffer, glm::mat4 modelMatrix) const;
+
+private:
+    GltfMaterial material;
+
     uint32_t firstIndex;   // Index de départ dans le globalIndexBuffer
     uint32_t indexCount;   // Nombre d'indices à dessiner
     vk::DeviceSize byteOffset;
-    int      materialIndex;
     vk::VertexInputBindingDescription2EXT vertexBindingDescription;
     std::vector<vk::VertexInputAttributeDescription2EXT> vertexAttributeDescriptions;
 };
@@ -50,9 +71,9 @@ public:
         primitives.push_back(std::move(primitive));
     }
     
-    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::Buffer& globalVertexBuffer) const {
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, vk::raii::Buffer& globalVertexBuffer, glm::mat4 modelMatrix) const {
         for (auto& primitive : primitives) {
-            primitive.draw(commandBuffer, globalVertexBuffer);
+            primitive.draw(commandBuffer, pipelineLayout, globalVertexBuffer, modelMatrix);
         }
     }
 private:
@@ -71,8 +92,7 @@ public:
 
         if (mesh) {
             // Exemple : Envoi de la matrice finale via Push Constants avant de draw le mesh
-            commandBuffer.pushConstants<glm::mat4>(pipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, globalTransform);
-            mesh->draw(commandBuffer, globalVertexBuffer);
+            mesh->draw(commandBuffer, pipelineLayout, globalVertexBuffer, globalTransform);
         }
 
         for (auto& child : children) {
@@ -88,7 +108,7 @@ private:
 
 class GltfModel {
 public:
-    GltfModel(const std::string& path, vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice, vk::raii::CommandPool& commandPool, vk::raii::Queue& graphicsQueue);
+    GltfModel(const std::string& path, vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice, vk::raii::CommandPool& commandPool, vk::raii::Queue& graphicsQueue, TextureManager& textureManager);
     ~GltfModel() = default;
 
     // Ajout du pipelineLayout pour mettre à jour les transformations des nodes lors du dessin

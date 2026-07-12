@@ -1,12 +1,12 @@
 struct VSInput {
     float3 inPos;
-    float3 inColor;
+    float3 inNormal;
     float2 inTexCoord;
 };
 
 struct VSOutput {
     float4 pos : SV_Position;
-    float3 fragColor;
+    float3 fragNormal;
     float2 fragTexCoord;
 };
 
@@ -18,8 +18,12 @@ struct CameraUBO {
 
 struct ModelPushConstants {
     float4x4 model;
+    uint albedoTextureIndex;
+    float4 baseColor;
+    uint activeAttributes;
 };
-[vk::push_constant] ConstantBuffer<ModelPushConstants> push;
+
+[vk::push_constant] ModelPushConstants push;
 
 [shader("vertex")]
 VSOutput vertMain(VSInput input) {
@@ -29,17 +33,19 @@ VSOutput vertMain(VSInput input) {
     float4 viewPos  = mul(camera.view, worldPos);
     output.pos      = mul(camera.proj, viewPos);
     
-    output.fragColor = input.inColor;
+    output.fragNormal = input.inNormal;
     output.fragTexCoord = input.inTexCoord;
     
     return output;
 }
 
-// [vk::binding(1, 0)] Sampler2D myTexture;
+[vk::binding(1, 1)] Sampler2D globalTextures[100];
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-    return float4(vertIn.fragColor, 1.0);
-    
-    // return myTexture.Sample(vertIn.fragTexCoord);
+    if ((push.activeAttributes & 1u) != 0u) {
+        return globalTextures[push.albedoTextureIndex].Sample(vertIn.fragTexCoord);
+    }
+
+    return float4(push.baseColor);
 }

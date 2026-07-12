@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <fstream>
 
-#include "vulkanUtils.hpp"
+#include "vulkan_utils.hpp"
 
 // --- Fonctions libres ---
 bool isDeviceSuitable(vk::raii::PhysicalDevice const & physicalDevice, std::vector<const char*> const & requiredDeviceExtension)

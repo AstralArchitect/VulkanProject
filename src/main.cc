@@ -8,6 +8,8 @@
 
 #include "HelloTriangleApplication.hpp"
 
+const int MAX_FRAMES_IN_FLIGHT = 2;
+
 void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
 {
     auto &commandBuffer = commandBuffers[frameIndex];
@@ -83,6 +85,8 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
 
     // Liaison des descripteurs pour la caméra/uniforms
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0, *cameraDescriptorSets[frameIndex], nullptr);
+
+    commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 1, *textureManager.getDescriptorSet(), nullptr);
 
     if (mainModel) {
         mainModel->draw(commandBuffer, pipelineLayout);

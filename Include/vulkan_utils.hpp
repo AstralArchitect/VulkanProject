@@ -226,4 +226,19 @@ namespace VulkanUtils {
         }
         throw std::runtime_error("failed to find supported format!");
     }
+
+    inline void copyBufferToImage(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Buffer &buffer, vk::raii::Image &image, uint32_t width, uint32_t height)
+    {
+        vk::BufferImageCopy region{.bufferOffset = 0,
+                                .bufferRowLength = 0,
+                                .bufferImageHeight = 0,
+                                .imageSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+                                                        .mipLevel = 0,
+                                                        .baseArrayLayer = 0,
+                                                        .layerCount = 1},
+                                .imageOffset = {0, 0, 0},
+                                .imageExtent = {width, height, 1}};
+
+        commandBuffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, region);
+    }
 }

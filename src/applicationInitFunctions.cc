@@ -6,7 +6,7 @@
 
 #include "HelloTriangleApplication.hpp"
 
-#include "vulkanUtils.hpp"
+#include "vulkan_utils.hpp"
 
 const std::vector<char const *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -54,43 +54,41 @@ void HelloTriangleApplication::initWindow()
 }
 
 void HelloTriangleApplication::initVulkan()
-{
+{   
     createInstance();
-
     setupDebugMessenger();
     createSurface();
-
     pickPhysicalDevice();
     createLogicalDevice();
 
     createSwapChain();
     createImageViews();
-    createDescriptorSetLayout();
-    createGraphicsPipeline();
+
     createCommandPool();
     createCommandBuffers();
+
+    textureManager.init(device, physicalDevice, commandPool, graphicsQueue);
+
+    createDescriptorSetLayout();
+    createGraphicsPipeline();
 
     mainModel = std::make_unique<GltfModel>(
         "res/models/horloge.glb",
         device,
         physicalDevice,
         commandPool,
-        graphicsQueue);
+        graphicsQueue,
+        textureManager);
 
     createUniformBuffers();
-
     createColorResources();
     createDepthResources();
 
-    createTextureImage();
-    createTextureImageView();
-    createTextureSampler();
-
     createDescriptorPool();
     createDescriptorSets();
-
     createSyncObjects();
 }
+
 
 void HelloTriangleApplication::createInstance()
 {
@@ -234,15 +232,26 @@ void HelloTriangleApplication::createLogicalDevice()
     deviceQueueCreateInfo.queueCount = 1;
     deviceQueueCreateInfo.pQueuePriorities = &queuePriority;
 
-    // Create a chain of feature structures
-    vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
-                       vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT>
-        featureChain = {
-            {.features = {.samplerAnisotropy = true}},            // vk::PhysicalDeviceFeatures2 (empty for now)
-            {.synchronization2 = true, .dynamicRendering = true}, // Enable sync2 and dynamic rendering from Vulkan 1.3
-            {.extendedDynamicState = true},                       // Enable extended dynamic state from the extension
-            {.vertexInputDynamicState = true}                     // Enable vertex input dynamic state from the extension
-        };
+        // Create a chain of feature structures
+    vk::StructureChain<
+        vk::PhysicalDeviceFeatures2, 
+        vk::PhysicalDeviceVulkan12Features, 
+        vk::PhysicalDeviceVulkan13Features,
+        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, 
+        vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT
+    > featureChain = {
+        {.features = {
+            .samplerAnisotropy = true,
+            .shaderSampledImageArrayDynamicIndexing = true
+        }},
+        {
+            .descriptorBindingPartiallyBound = true,
+            .runtimeDescriptorArray = false
+        },
+        {.synchronization2 = true, .dynamicRendering = true},
+        {.extendedDynamicState = true},
+        {.vertexInputDynamicState = true}
+    };
 
     vk::DeviceCreateInfo deviceCreateInfo{
         .pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
@@ -321,13 +330,7 @@ void HelloTriangleApplication::createDescriptorSetLayout()
                                                     .descriptorCount = 1,
                                                     .stageFlags = vk::ShaderStageFlagBits::eVertex};
 
-    vk::DescriptorSetLayoutBinding samplerLayoutBinding{.binding = 1,
-                                                        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-                                                        .descriptorCount = 1,
-                                                        .stageFlags = vk::ShaderStageFlagBits::eFragment,
-                                                        .pImmutableSamplers = nullptr};
-
-    std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {uboLayoutBinding, samplerLayoutBinding};
+    std::array<vk::DescriptorSetLayoutBinding, 1> bindings = {uboLayoutBinding};
 
     vk::DescriptorSetLayoutCreateInfo layoutInfo{.bindingCount = static_cast<uint32_t>(bindings.size()), .pBindings = bindings.data()};
     descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
@@ -393,13 +396,19 @@ void HelloTriangleApplication::createGraphicsPipeline()
         .stencilTestEnable = vk::False};
 
     vk::PushConstantRange pushConstantRange{
-        .stageFlags = vk::ShaderStageFlagBits::eVertex,
+        // Accessible par le Vertex Shader ET le Fragment Shader
+        .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
         .offset = 0,
-        .size = sizeof(glm::mat4)};
+        .size = sizeof(MeshPushConstants) // Utilise la taille de notre nouvelle structure (72 octets)
+    };
 
+    std::array<vk::DescriptorSetLayout, 2> layouts = {
+        *descriptorSetLayout,                      // Correspond au Set 0 (Caméra)
+        *textureManager.getDescriptorSetLayout()  // Correspond au Set 1 (Textures, géré par le texture manager)
+    };
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
-        .setLayoutCount = 1,
-        .pSetLayouts = &*descriptorSetLayout,
+        .setLayoutCount = static_cast<uint32_t>(layouts.size()), // Vaut 2
+        .pSetLayouts = layouts.data(),
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &pushConstantRange};
 
@@ -437,7 +446,7 @@ void HelloTriangleApplication::createCommandBuffers()
 {
     vk::CommandBufferAllocateInfo allocInfo{.commandPool = commandPool,
                                             .level = vk::CommandBufferLevel::ePrimary,
-                                            .commandBufferCount = MAX_FRAMES_IN_FLIGHT};
+                                            .commandBufferCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT)};
     commandBuffers = vk::raii::CommandBuffers(device, allocInfo);
 }
 
@@ -529,22 +538,6 @@ void transitionImageLayout(vk::raii::CommandBuffer &commandBuffer, const vk::rai
     commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
 }
 
-void copyBufferToImage(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Buffer &buffer, vk::raii::Image &image,
-                       uint32_t width, uint32_t height)
-{
-    vk::BufferImageCopy region{.bufferOffset = 0,
-                               .bufferRowLength = 0,
-                               .bufferImageHeight = 0,
-                               .imageSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor,
-                                                    .mipLevel = 0,
-                                                    .baseArrayLayer = 0,
-                                                    .layerCount = 1},
-                               .imageOffset = {0, 0, 0},
-                               .imageExtent = {width, height, 1}};
-
-    commandBuffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, region);
-}
-
 void HelloTriangleApplication::createSyncObjects()
 {
     assert(presentCompleteSemaphores.empty() && renderFinishedSemaphores.empty() && inFlightFences.empty());
@@ -601,11 +594,10 @@ void HelloTriangleApplication::createDescriptorPool()
 {
     // We need MAX_FRAMES_IN_FLIGHT descriptor sets
     std::array poolSize{
-        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT)};
+        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT)};
     vk::DescriptorPoolCreateInfo poolInfo{
         .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        .maxSets = MAX_FRAMES_IN_FLIGHT,
+        .maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
         .poolSizeCount = static_cast<uint32_t>(poolSize.size()),
         .pPoolSizes = poolSize.data()};
     descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
@@ -633,12 +625,6 @@ void HelloTriangleApplication::createDescriptorSets()
             .offset = 0,
             .range = sizeof(CameraUBO)};
 
-        // Binding 1 : La Texture Globale (temporaire, avant l'intégration des matériaux glTF)
-        vk::DescriptorImageInfo imageInfo{
-            .sampler = *textureSampler,
-            .imageView = *textureImageView,
-            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-
         std::array descriptorWrites{
             vk::WriteDescriptorSet{
                 .dstSet = *cameraDescriptorSets[i],
@@ -646,17 +632,43 @@ void HelloTriangleApplication::createDescriptorSets()
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
                 .descriptorType = vk::DescriptorType::eUniformBuffer,
-                .pBufferInfo = &bufferInfo},
-            vk::WriteDescriptorSet{
-                .dstSet = *cameraDescriptorSets[i],
-                .dstBinding = 1,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-                .pImageInfo = &imageInfo}};
+                .pBufferInfo = &bufferInfo}};
 
         device.updateDescriptorSets(descriptorWrites, {});
     }
+}
+
+void HelloTriangleApplication::cleanupSwapChain()
+{
+    swapChainImageViews.clear();
+    swapChain = nullptr;
+}
+
+void HelloTriangleApplication::recreateSwapChain()
+{
+    int width = 0, height = 0;
+    while (width == 0 || height == 0)
+    {
+        glfwGetFramebufferSize(window, &width, &height);
+        glfwWaitEvents();
+    }
+
+    device.waitIdle();
+
+    cleanupSwapChain();
+    createSwapChain();
+    createImageViews();
+    createColorResources();
+    createDepthResources();
+}
+
+void HelloTriangleApplication::cleanup()
+{
+    // RAII handles are automatically destroyed in the reverse order of their declaration.
+    // Since 'device' is declared before the Vulkan resources, it will safely be destroyed last.
+
+    glfwDestroyWindow(window);
+    glfwTerminate();
 }
 
 void HelloTriangleApplication::generateMipmaps(
@@ -734,98 +746,4 @@ void HelloTriangleApplication::generateMipmaps(
     barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
 
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
-}
-
-void HelloTriangleApplication::createTextureImage()
-{
-    int texWidth, texHeight, texChannels;
-    stbi_uc *pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-    vk::DeviceSize imageSize = texWidth * texHeight * 4;
-
-    if (!pixels)
-    {
-        throw std::runtime_error("failed to load texture image!");
-    }
-
-    auto [stagingBuffer, stagingBufferMemory] = VulkanUtils::createBuffer(device, physicalDevice, imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-
-    void *data = stagingBufferMemory.mapMemory(0, imageSize);
-    memcpy(data, pixels, imageSize);
-    stagingBufferMemory.unmapMemory();
-
-    stbi_image_free(pixels);
-
-    mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
-
-    std::tie(textureImage, textureImageMemory) =
-        VulkanUtils::createImage(device, physicalDevice, texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
-                                 vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-                                 vk::MemoryPropertyFlagBits::eDeviceLocal, vk::SampleCountFlagBits::e1, mipLevels);
-
-    vk::raii::CommandBuffer commandBuffer = VulkanUtils::beginSingleTimeCommands(device, commandPool);
-    VulkanUtils::transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
-    copyBufferToImage(commandBuffer, stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-
-    // transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, mipLevels);
-    generateMipmaps(commandBuffer, textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
-    VulkanUtils::endSingleTimeCommands(std::move(commandBuffer), graphicsQueue);
-}
-
-void HelloTriangleApplication::createTextureImageView()
-{
-    textureImageView = VulkanUtils::createImageView(device, *textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, mipLevels);
-}
-
-void HelloTriangleApplication::createTextureSampler()
-{
-    vk::PhysicalDeviceProperties properties = physicalDevice.getProperties();
-    vk::SamplerCreateInfo samplerInfo{
-        .magFilter = vk::Filter::eLinear,
-        .minFilter = vk::Filter::eLinear,
-        .mipmapMode = vk::SamplerMipmapMode::eLinear,
-        .addressModeU = vk::SamplerAddressMode::eRepeat,
-        .addressModeV = vk::SamplerAddressMode::eRepeat,
-        .addressModeW = vk::SamplerAddressMode::eRepeat,
-        .mipLodBias = 0.0f,
-        .anisotropyEnable = vk::True,
-        .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
-        .compareEnable = vk::False,
-        .compareOp = vk::CompareOp::eAlways,
-        .minLod = 0.0f,
-        .maxLod = vk::LodClampNone};
-
-    textureSampler = vk::raii::Sampler(device, samplerInfo);
-}
-
-void HelloTriangleApplication::cleanupSwapChain()
-{
-    swapChainImageViews.clear();
-    swapChain = nullptr;
-}
-
-void HelloTriangleApplication::recreateSwapChain()
-{
-    int width = 0, height = 0;
-    while (width == 0 || height == 0)
-    {
-        glfwGetFramebufferSize(window, &width, &height);
-        glfwWaitEvents();
-    }
-
-    device.waitIdle();
-
-    cleanupSwapChain();
-    createSwapChain();
-    createImageViews();
-    createColorResources();
-    createDepthResources();
-}
-
-void HelloTriangleApplication::cleanup()
-{
-    // RAII handles are automatically destroyed in the reverse order of their declaration.
-    // Since 'device' is declared before the Vulkan resources, it will safely be destroyed last.
-
-    glfwDestroyWindow(window);
-    glfwTerminate();
 }

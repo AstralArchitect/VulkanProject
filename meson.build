@@ -24,6 +24,7 @@ cpp_sources = [
     cpp_dir + 'initUtilities.cc',
     
     cpp_dir + 'model.cc',
+    cpp_dir + 'text_manager.cc',
 ]
 
 sources = cpp_sources

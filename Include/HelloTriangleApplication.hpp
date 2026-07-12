@@ -24,20 +24,15 @@ import vulkan_hpp;
 
 #include "model.hpp"
 
+#include "text_manager.hpp"
+
 // --- Constantes et variables globales ---
 static constexpr uint32_t WIDTH = 800;
 static constexpr uint32_t HEIGHT = 600;
-static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+extern const int MAX_FRAMES_IN_FLIGHT;
 
 const std::string MODEL_PATH = "res/models/horloge.glb";
 const std::string TEXTURE_PATH = "res/textures/viking_room.png";
-
-struct UniformBufferObject
-{
-    glm::mat4 model;
-    glm::mat4 view;
-    glm::mat4 proj;
-};
 
 class HelloTriangleApplication
 {
@@ -77,14 +72,9 @@ private:
     vk::raii::CommandPool commandPool = nullptr;
     std::vector<vk::raii::CommandBuffer> commandBuffers;
 
-    //std::array<GameObject, MAX_OBJECTS> gameObjects;
     std::unique_ptr<GltfModel> mainModel;
 
-    uint32_t mipLevels = 0;
-    vk::raii::Image textureImage = nullptr;
-    vk::raii::DeviceMemory textureImageMemory = nullptr;
-    vk::raii::ImageView textureImageView = nullptr;
-    vk::raii::Sampler textureSampler = nullptr;
+    TextureManager textureManager;
 
     vk::raii::Image depthImage = nullptr;
     vk::raii::DeviceMemory depthImageMemory = nullptr;
@@ -146,10 +136,6 @@ private:
 
     void createDescriptorPool();
     void createDescriptorSets();
-
-    void createTextureImage();
-    void createTextureImageView();
-    void createTextureSampler();
     
     void createDepthResources();
 
