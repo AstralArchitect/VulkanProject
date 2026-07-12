@@ -17,12 +17,13 @@ endif
 
 # --- Chemins des sources ---
 cpp_dir = 'src/'
-tools_dir = cpp_dir + 'tools/'
 
 cpp_sources = [
     cpp_dir + 'main.cc',
     cpp_dir + 'applicationInitFunctions.cc',
     cpp_dir + 'initUtilities.cc',
+    
+    cpp_dir + 'model.cc',
 ]
 
 sources = cpp_sources
@@ -38,6 +39,17 @@ glfw_dep = dependency('glfw3')
 glm_dep = dependency('glm')
 tinyobjloader_dep = dependency('tinyobjloader')
 
+cmake = import('cmake')
+opt_var = cmake.subproject_options()
+opt_var.add_cmake_defines({
+    'TINYGLTF_BUILD_LOADER_EXAMPLE': false,
+    'TINYGLTF_HEADER_ONLY': false,
+    'TINYGLTF_INSTALL': false
+})
+
+tinygltf = cmake.subproject('tinygltf', options: opt_var)
+tinygltf_dep = tinygltf.dependency('tinygltf')
+
 # --- Inclusion des dossiers de headers ---
 include_dir = include_directories('Include')
 
@@ -46,7 +58,7 @@ executable(
     'main',
     sources: sources,
     include_directories: include_dir,
-    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinyobjloader_dep],
+    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinyobjloader_dep, tinygltf_dep],
 )
 
 # --- Compiler les shaders ---

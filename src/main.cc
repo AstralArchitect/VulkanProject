@@ -1,10 +1,6 @@
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-#define STB_IMAGE
-
-#define TINYOBJLOADER_IMPLEMENTATION
-#include <tiny_obj_loader.h>
-#define TINYOBJLOADER
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <tiny_gltf.h>
+#define TINYGLTF
 
 #include <iostream>
 
@@ -82,18 +78,15 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
 
-    commandBuffer.bindDescriptorSets(
-        vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0,
-        *descriptorSets[frameIndex], // On bind le set de la frame actuelle
-        nullptr);
-
     commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
     commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
 
-    commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
-    commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexTypeValue<decltype(indices)::value_type>::value);
+    // Liaison des descripteurs pour la caméra/uniforms
+    commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0, *cameraDescriptorSets[frameIndex], nullptr);
 
-    commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+    if (mainModel) {
+        mainModel->draw(commandBuffer, pipelineLayout);
+    }
 
     commandBuffer.endRendering();
 
@@ -114,25 +107,20 @@ void HelloTriangleApplication::recordCommandBuffer(uint32_t imageIndex)
 void HelloTriangleApplication::updateUniformBuffer(uint32_t currentImage)
 {
     static auto startTime = std::chrono::high_resolution_clock::now();
-
     auto currentTime = std::chrono::high_resolution_clock::now();
-    float time = std::chrono::duration<float, std::chrono::seconds::period>(
-                     currentTime - startTime)
-                     .count();
+    float time = std::chrono::duration<float>(currentTime - startTime).count();
 
-    UniformBufferObject ubo{};
-    ubo.model = glm::mat4(1.f);
-    ubo.model = rotate(glm::mat4(1.0f), sin(time) / 2.0f * glm::radians(90.0f), glm::vec3(.0f, 0.f, 1.f));
-    ubo.view = lookAt(glm::vec3(2.f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
-                      glm::vec3(0.0f, 0.0f, 1.0f));
+    // Camera and projection matrices (shared by all objects)
+    glm::mat4 view = glm::lookAt(glm::vec3(2.0f, 2.0f, 6.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 proj = glm::perspective(glm::radians(45.0f),
+                                     static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height),
+                                     0.1f, 20.0f);
+    proj[1][1] *= -1; // Flip Y for Vulkan
 
-    ubo.proj = glm::perspective(glm::radians(45.0f),
-                                static_cast<float>(swapChainExtent.width) /
-                                    static_cast<float>(swapChainExtent.height),
-                                0.1f, 10.0f);
-    ubo.proj[1][1] *= -1;
-
-    memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+    CameraUBO ubo{};
+    ubo.view = view;
+    ubo.proj = proj;
+    memcpy(cameraUniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }
 
 void HelloTriangleApplication::drawFrame()

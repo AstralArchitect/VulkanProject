@@ -6,10 +6,9 @@
 
 #include "HelloTriangleApplication.hpp"
 
-const std::vector<char const *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
+#include "vulkanUtils.hpp"
 
-std::vector<Vertex> vertices;
-std::vector<uint32_t> indices;
+const std::vector<char const *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
 #ifdef NDEBUG
 constexpr bool enableValidationLayers = false;
@@ -19,8 +18,6 @@ constexpr bool enableValidationLayers = true;
 
 bool isDeviceSuitable(vk::raii::PhysicalDevice const &physicalDevice, std::vector<const char *> const &requiredDeviceExtension);
 std::vector<char> readFile(const std::string &filename);
-
-uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties, vk::raii::PhysicalDevice const &physicalDevice);
 
 static void framebufferResizeCallback(GLFWwindow *window, int width, int height)
 {
@@ -73,10 +70,13 @@ void HelloTriangleApplication::initVulkan()
     createCommandPool();
     createCommandBuffers();
 
-    loadModel();
+    mainModel = std::make_unique<GltfModel>(
+        "res/models/horloge.glb",
+        device,
+        physicalDevice,
+        commandPool,
+        graphicsQueue);
 
-    createVertexBuffer();
-    createIndexBuffer();
     createUniformBuffers();
 
     createColorResources();
@@ -184,11 +184,13 @@ VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApplication::debugCallback(
 void HelloTriangleApplication::pickPhysicalDevice()
 {
     std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
-    
+
     bool deviceFound = false;
 
-    for (const auto& device : physicalDevices) {
-        if (isDeviceSuitable(device, requiredDeviceExtension)) {
+    for (const auto &device : physicalDevices)
+    {
+        if (isDeviceSuitable(device, requiredDeviceExtension))
+        {
             physicalDevice = device;
             msaaSamples = getMaxUsableSampleCount();
             deviceFound = true;
@@ -234,11 +236,12 @@ void HelloTriangleApplication::createLogicalDevice()
 
     // Create a chain of feature structures
     vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
-                       vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+                       vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT>
         featureChain = {
             {.features = {.samplerAnisotropy = true}},            // vk::PhysicalDeviceFeatures2 (empty for now)
             {.synchronization2 = true, .dynamicRendering = true}, // Enable sync2 and dynamic rendering from Vulkan 1.3
-            {.extendedDynamicState = true}                        // Enable extended dynamic state from the extension
+            {.extendedDynamicState = true},                       // Enable extended dynamic state from the extension
+            {.vertexInputDynamicState = true}                     // Enable vertex input dynamic state from the extension
         };
 
     vk::DeviceCreateInfo deviceCreateInfo{
@@ -342,18 +345,13 @@ void HelloTriangleApplication::createGraphicsPipeline()
 
     vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
-    std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor, vk::DynamicState::eVertexInputEXT};
 
-    vk::PipelineDynamicStateCreateInfo dynamicState{.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
-                                                    .pDynamicStates = dynamicStates.data()};
+    vk::PipelineDynamicStateCreateInfo dynamicState{
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data()};
 
-    auto bindingDescription = Vertex::getBindingDescription();
-    auto attributeDescriptions = Vertex::getAttributeDescriptions();
-    vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
-        .vertexBindingDescriptionCount = 1,
-        .pVertexBindingDescriptions = &bindingDescription,
-        .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
-        .pVertexAttributeDescriptions = attributeDescriptions.data()};
+    vk::PipelineVertexInputStateCreateInfo vertexInputInfo{};
 
     vk::PipelineInputAssemblyStateCreateInfo inputAssembly{.topology = vk::PrimitiveTopology::eTriangleList};
 
@@ -394,8 +392,16 @@ void HelloTriangleApplication::createGraphicsPipeline()
         .depthBoundsTestEnable = vk::False,
         .stencilTestEnable = vk::False};
 
+    vk::PushConstantRange pushConstantRange{
+        .stageFlags = vk::ShaderStageFlagBits::eVertex,
+        .offset = 0,
+        .size = sizeof(glm::mat4)};
+
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
-        .setLayoutCount = 1, .pSetLayouts = &*descriptorSetLayout, .pushConstantRangeCount = 0};
+        .setLayoutCount = 1,
+        .pSetLayouts = &*descriptorSetLayout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pushConstantRange};
 
     pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
@@ -555,99 +561,31 @@ void HelloTriangleApplication::createSyncObjects()
     }
 }
 
-void HelloTriangleApplication::loadModel()
-{
-    tinyobj::attrib_t attrib;
-    std::vector<tinyobj::shape_t> shapes;
-    std::vector<tinyobj::material_t> materials;
-    std::string warn, err;
-
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str()))
-    {
-        throw std::runtime_error(warn + err);
-    }
-
-    std::unordered_map<Vertex, uint32_t> uniqueVertices{};
-
-    for (const auto &shape : shapes)
-    {
-        for (const auto &index : shape.mesh.indices)
-        {
-            Vertex vertex{};
-
-            vertex.pos = {
-                attrib.vertices[3 * index.vertex_index + 0],
-                attrib.vertices[3 * index.vertex_index + 1],
-                attrib.vertices[3 * index.vertex_index + 2]};
-
-            vertex.texCoord = {
-                attrib.texcoords[2 * index.texcoord_index + 0],
-                1.0f - attrib.texcoords[2 * index.texcoord_index + 1]};
-
-            vertex.color = {1.0f, 1.0f, 1.0f};
-
-            auto [it, inserted] = uniqueVertices.insert({vertex, static_cast<uint32_t>(vertices.size())});
-            if (inserted)
-            {
-                vertices.push_back(vertex);
-            }
-
-            indices.push_back(it->second);
-        }
-    }
-}
-
-void HelloTriangleApplication::createVertexBuffer()
-{
-    vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
-
-    auto [stagingBuffer, stagingBufferMemory] =
-        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-
-    vk::MemoryRequirements memRequirementsStaging = stagingBuffer.getMemoryRequirements();
-
-    void *dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
-    memcpy(dataStaging, vertices.data(), bufferSize);
-    stagingBufferMemory.unmapMemory();
-
-    std::tie(vertexBuffer, vertexBufferMemory) =
-        createBuffer(bufferSize, vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-    copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
-}
-
-void HelloTriangleApplication::createIndexBuffer()
-{
-    vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
-
-    auto [stagingBuffer, stagingBufferMemory] =
-        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-
-    void *data = stagingBufferMemory.mapMemory(0, bufferSize);
-    memcpy(data, indices.data(), (size_t)bufferSize);
-    stagingBufferMemory.unmapMemory();
-
-    std::tie(indexBuffer, indexBufferMemory) =
-        createBuffer(bufferSize, vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-    copyBuffer(stagingBuffer, indexBuffer, bufferSize);
-}
-
 void HelloTriangleApplication::createUniformBuffers()
 {
+    // On nettoie les anciens buffers globaux s'ils existent (utile lors du redimensionnement de la fenêtre)
+    cameraUniformBuffers.clear();
+    cameraUniformBuffersMemory.clear();
+    cameraUniformBuffersMapped.clear();
+
+    // La nouvelle taille : juste les matrices View et Proj
+    vk::DeviceSize bufferSize = sizeof(CameraUBO);
+
+    // On crée uniquement 1 buffer par Frame in Flight
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
-        auto [buffer, bufferMem] =
-            createBuffer(bufferSize, vk::BufferUsageFlagBits::eUniformBuffer,
-                         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-        uniformBuffers.emplace_back(std::move(buffer));
-        uniformBuffersMemory.emplace_back(std::move(bufferMem));
-        uniformBuffersMapped.emplace_back(uniformBuffersMemory.back().mapMemory(0, bufferSize));
+        auto [buffer, bufferMem] = VulkanUtils::createBuffer(
+            device,
+            physicalDevice,
+            bufferSize,
+            vk::BufferUsageFlagBits::eUniformBuffer,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+        // On map la mémoire de façon persistante
+        cameraUniformBuffersMapped.emplace_back(bufferMem.mapMemory(0, bufferSize));
+
+        cameraUniformBuffers.emplace_back(std::move(buffer));
+        cameraUniformBuffersMemory.emplace_back(std::move(bufferMem));
     }
 }
 
@@ -655,52 +593,68 @@ void HelloTriangleApplication::createDepthResources()
 {
     vk::Format depthFormat = findDepthFormat();
 
-    std::tie(depthImage, depthImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
-    depthImageView = createImageView(*depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+    std::tie(depthImage, depthImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
+    depthImageView = VulkanUtils::createImageView(device, *depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
 }
 
 void HelloTriangleApplication::createDescriptorPool()
 {
-    std::array<vk::DescriptorPoolSize, 2> poolSize{
-        {{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = MAX_FRAMES_IN_FLIGHT},
-         {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = MAX_FRAMES_IN_FLIGHT}}};
-
+    // We need MAX_FRAMES_IN_FLIGHT descriptor sets
+    std::array poolSize{
+        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT)};
     vk::DescriptorPoolCreateInfo poolInfo{
         .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
         .maxSets = MAX_FRAMES_IN_FLIGHT,
         .poolSizeCount = static_cast<uint32_t>(poolSize.size()),
         .pPoolSizes = poolSize.data()};
-
     descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
 }
 
 void HelloTriangleApplication::createDescriptorSets()
 {
+    // On crée les Layouts pour la caméra globale
     std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptorSetLayout);
+    vk::DescriptorSetAllocateInfo allocInfo{
+        .descriptorPool = *descriptorPool,
+        .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+        .pSetLayouts = layouts.data()};
 
-    vk::DescriptorSetAllocateInfo allocInfo{.descriptorPool = descriptorPool,
-                                            .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
-                                            .pSetLayouts = layouts.data()};
+    cameraDescriptorSets.clear();
+    cameraDescriptorSets = device.allocateDescriptorSets(allocInfo);
 
-    descriptorSets = device.allocateDescriptorSets(allocInfo);
-
+    // On met à jour les Descripteurs
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffers[i], .offset = 0, .range = sizeof(UniformBufferObject)};
-        vk::DescriptorImageInfo imageInfo{.sampler = textureSampler, .imageView = textureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
 
-        std::array<vk::WriteDescriptorSet, 2> descriptorWrites{{{.dstSet = descriptorSets[i],
-                                                                 .dstBinding = 0,
-                                                                 .dstArrayElement = 0,
-                                                                 .descriptorCount = 1,
-                                                                 .descriptorType = vk::DescriptorType::eUniformBuffer,
-                                                                 .pBufferInfo = &bufferInfo},
-                                                                {.dstSet = descriptorSets[i],
-                                                                 .dstBinding = 1,
-                                                                 .dstArrayElement = 0,
-                                                                 .descriptorCount = 1,
-                                                                 .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-                                                                 .pImageInfo = &imageInfo}}};
+        // Binding 0 : La Caméra
+        vk::DescriptorBufferInfo bufferInfo{
+            .buffer = *cameraUniformBuffers[i],
+            .offset = 0,
+            .range = sizeof(CameraUBO)};
+
+        // Binding 1 : La Texture Globale (temporaire, avant l'intégration des matériaux glTF)
+        vk::DescriptorImageInfo imageInfo{
+            .sampler = *textureSampler,
+            .imageView = *textureImageView,
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+
+        std::array descriptorWrites{
+            vk::WriteDescriptorSet{
+                .dstSet = *cameraDescriptorSets[i],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eUniformBuffer,
+                .pBufferInfo = &bufferInfo},
+            vk::WriteDescriptorSet{
+                .dstSet = *cameraDescriptorSets[i],
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                .pImageInfo = &imageInfo}};
+
         device.updateDescriptorSets(descriptorWrites, {});
     }
 }
@@ -733,9 +687,7 @@ void HelloTriangleApplication::generateMipmaps(
             .baseMipLevel = 0,
             .levelCount = 1,
             .baseArrayLayer = 0,
-            .layerCount = 1
-        }
-    };
+            .layerCount = 1}};
 
     int32_t mipWidth = texWidth;
     int32_t mipHeight = texHeight;
@@ -758,8 +710,8 @@ void HelloTriangleApplication::generateMipmaps(
 
         commandBuffer.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image, vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
 
-        barrier.oldLayout     = vk::ImageLayout::eTransferSrcOptimal;
-        barrier.newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal;
+        barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
         barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
 
@@ -776,10 +728,10 @@ void HelloTriangleApplication::generateMipmaps(
     }
 
     barrier.subresourceRange.baseMipLevel = mipLevels - 1;
-    barrier.oldLayout                     = vk::ImageLayout::eTransferDstOptimal;
-    barrier.newLayout                     = vk::ImageLayout::eShaderReadOnlyOptimal;
-    barrier.srcAccessMask                 = vk::AccessFlagBits::eTransferWrite;
-    barrier.dstAccessMask                 = vk::AccessFlagBits::eShaderRead;
+    barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+    barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
 
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
 }
@@ -795,7 +747,7 @@ void HelloTriangleApplication::createTextureImage()
         throw std::runtime_error("failed to load texture image!");
     }
 
-    auto [stagingBuffer, stagingBufferMemory] = createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    auto [stagingBuffer, stagingBufferMemory] = VulkanUtils::createBuffer(device, physicalDevice, imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
     void *data = stagingBufferMemory.mapMemory(0, imageSize);
     memcpy(data, pixels, imageSize);
@@ -806,41 +758,41 @@ void HelloTriangleApplication::createTextureImage()
     mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
     std::tie(textureImage, textureImageMemory) =
-        createImage(texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
-                    vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-                    vk::MemoryPropertyFlagBits::eDeviceLocal, vk::SampleCountFlagBits::e1, mipLevels);
+        VulkanUtils::createImage(device, physicalDevice, texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+                                 vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+                                 vk::MemoryPropertyFlagBits::eDeviceLocal, vk::SampleCountFlagBits::e1, mipLevels);
 
-    vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands();
-    transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
+    vk::raii::CommandBuffer commandBuffer = VulkanUtils::beginSingleTimeCommands(device, commandPool);
+    VulkanUtils::transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
     copyBufferToImage(commandBuffer, stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
 
     // transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, mipLevels);
     generateMipmaps(commandBuffer, textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
-    endSingleTimeCommands(std::move(commandBuffer));
+    VulkanUtils::endSingleTimeCommands(std::move(commandBuffer), graphicsQueue);
 }
 
 void HelloTriangleApplication::createTextureImageView()
 {
-    textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, mipLevels);
+    textureImageView = VulkanUtils::createImageView(device, *textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, mipLevels);
 }
 
 void HelloTriangleApplication::createTextureSampler()
 {
     vk::PhysicalDeviceProperties properties = physicalDevice.getProperties();
-    vk::SamplerCreateInfo        samplerInfo{
-        .magFilter        = vk::Filter::eLinear,
-        .minFilter        = vk::Filter::eLinear,
-        .mipmapMode       = vk::SamplerMipmapMode::eLinear,
-        .addressModeU     = vk::SamplerAddressMode::eRepeat,
-        .addressModeV     = vk::SamplerAddressMode::eRepeat,
-        .addressModeW     = vk::SamplerAddressMode::eRepeat,
-        .mipLodBias       = 0.0f,
+    vk::SamplerCreateInfo samplerInfo{
+        .magFilter = vk::Filter::eLinear,
+        .minFilter = vk::Filter::eLinear,
+        .mipmapMode = vk::SamplerMipmapMode::eLinear,
+        .addressModeU = vk::SamplerAddressMode::eRepeat,
+        .addressModeV = vk::SamplerAddressMode::eRepeat,
+        .addressModeW = vk::SamplerAddressMode::eRepeat,
+        .mipLodBias = 0.0f,
         .anisotropyEnable = vk::True,
-        .maxAnisotropy    = properties.limits.maxSamplerAnisotropy,
-        .compareEnable    = vk::False,
-        .compareOp        = vk::CompareOp::eAlways,
-        .minLod           = 0.0f,
-        .maxLod           = vk::LodClampNone};
+        .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+        .compareEnable = vk::False,
+        .compareOp = vk::CompareOp::eAlways,
+        .minLod = 0.0f,
+        .maxLod = vk::LodClampNone};
 
     textureSampler = vk::raii::Sampler(device, samplerInfo);
 }

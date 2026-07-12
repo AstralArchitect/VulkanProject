@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <fstream>
 
+#include "vulkanUtils.hpp"
+
 // --- Fonctions libres ---
 bool isDeviceSuitable(vk::raii::PhysicalDevice const & physicalDevice, std::vector<const char*> const & requiredDeviceExtension)
 {
@@ -81,23 +83,6 @@ static inline uint32_t findMemoryTypeStatic(uint32_t typeFilter, vk::MemoryPrope
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> HelloTriangleApplication::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties)
-{
-  vk::BufferCreateInfo   bufferInfo{.size = size, .usage = usage, .sharingMode = vk::SharingMode::eExclusive};
-  vk::raii::Buffer       buffer          = vk::raii::Buffer(device, bufferInfo);
-  vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
-  vk::MemoryAllocateInfo allocInfo{.allocationSize = memRequirements.size, .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties, physicalDevice)};
-  vk::raii::DeviceMemory bufferMemory = vk::raii::DeviceMemory(device, allocInfo);
-  buffer.bindMemory(*bufferMemory, 0);
-  return {std::move(buffer), std::move(bufferMemory)};
-}
-
-void HelloTriangleApplication::copyBuffer(vk::raii::Buffer & srcBuffer, vk::raii::Buffer & dstBuffer, vk::DeviceSize size) {
-    vk::raii::CommandBuffer commandCopyBuffer = beginSingleTimeCommands();
-    commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy{.size = size});
-    endSingleTimeCommands(std::move(commandCopyBuffer));
-}
-
 vk::SurfaceFormatKHR HelloTriangleApplication::chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats)
 {
     assert(!availableFormats.empty());
@@ -145,46 +130,6 @@ uint32_t HelloTriangleApplication::chooseSwapMinImageCount(vk::SurfaceCapabiliti
     return shaderModule;
 }
 
-vk::raii::ImageView HelloTriangleApplication::createImageView(vk::Image const &image, vk::Format format, vk::ImageAspectFlags aspectFlags, uint32_t mipLevels)
-{
-    vk::ImageViewCreateInfo viewInfo{.image = image,
-                                     .viewType = vk::ImageViewType::e2D,
-                                     .format = format,
-                                     .subresourceRange = {.aspectMask = aspectFlags,
-                                                          .baseMipLevel = 0,
-                                                          .levelCount = mipLevels,
-                                                          .baseArrayLayer = 0,
-                                                          .layerCount = 1}};
-    return vk::raii::ImageView(device, viewInfo);
-}
-
-std::pair<vk::raii::Image, vk::raii::DeviceMemory> HelloTriangleApplication::createImage(
-    uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage,
-    vk::MemoryPropertyFlags properties, vk::SampleCountFlagBits numSamples, uint32_t mipLevels)
-{
-    vk::ImageCreateInfo imageInfo{
-        .imageType = vk::ImageType::e2D,
-        .format = format,
-        .extent = {width, height, 1},
-        .mipLevels = mipLevels,
-        .arrayLayers = 1,
-        .samples = numSamples,
-        .tiling = tiling,
-        .usage = usage,
-        .sharingMode = vk::SharingMode::eExclusive};
-
-    vk::raii::Image image = vk::raii::Image(device, imageInfo);
-
-    vk::MemoryRequirements memRequirements = image.getMemoryRequirements();
-    vk::MemoryAllocateInfo allocInfo{
-        .allocationSize = memRequirements.size,
-        .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties, physicalDevice)};
-    vk::raii::DeviceMemory imageMemory = vk::raii::DeviceMemory(device, allocInfo);
-    image.bindMemory(imageMemory, 0);
-
-    return {std::move(image), std::move(imageMemory)};
-}
-
 vk::Format HelloTriangleApplication::findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
 {
     for (const auto format : candidates)
@@ -208,29 +153,6 @@ vk::Format HelloTriangleApplication::findDepthFormat()
                                vk::FormatFeatureFlagBits::eDepthStencilAttachment);
 }
 
-vk::raii::CommandBuffer HelloTriangleApplication::beginSingleTimeCommands()
-{
-    vk::CommandBufferAllocateInfo allocInfo{
-        .commandPool = commandPool,
-        .level = vk::CommandBufferLevel::ePrimary,
-        .commandBufferCount = 1};
-    vk::raii::CommandBuffer commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
-
-    vk::CommandBufferBeginInfo beginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit};
-    commandBuffer.begin(beginInfo);
-
-    return std::move(commandBuffer);
-}
-
-void HelloTriangleApplication::endSingleTimeCommands(vk::raii::CommandBuffer &&commandBuffer)
-{
-    commandBuffer.end();
-
-    vk::SubmitInfo submitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commandBuffer};
-    graphicsQueue.submit(submitInfo, nullptr);
-    graphicsQueue.waitIdle();
-}
-
 vk::SampleCountFlagBits HelloTriangleApplication::getMaxUsableSampleCount() {
     vk::PhysicalDeviceProperties physicalDeviceProperties = physicalDevice.getProperties();
 
@@ -248,6 +170,6 @@ vk::SampleCountFlagBits HelloTriangleApplication::getMaxUsableSampleCount() {
 void HelloTriangleApplication::createColorResources() {
     vk::Format colorFormat = swapChainSurfaceFormat.format;
 
-    std::tie(colorImage, colorImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, colorFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
-    colorImageView = createImageView(*colorImage, colorFormat, vk::ImageAspectFlagBits::eColor);
+    std::tie(colorImage, colorImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, colorFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
+    colorImageView = VulkanUtils::createImageView(device, *colorImage, colorFormat, vk::ImageAspectFlagBits::eColor);
 }

@@ -1,0 +1,146 @@
+#pragma once
+
+#if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES)
+#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+#include <vulkan/vulkan_raii.hpp>
+#else
+#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+import vulkan_hpp;
+#endif
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
+#include <array>
+#include <vector>
+#include <string>
+#include <optional>
+
+#include "vertex.hpp"
+
+#ifndef STB_IMAGE
+#include "stb_image.h"
+#endif
+
+#ifndef TINYGLTF
+#include <tiny_gltf.h>
+#endif
+
+class GltfPrimitive {
+public:
+    // Plus besoin de Vulkan ici ! Juste les infos de découpe du Mega-Buffer.
+    GltfPrimitive(uint32_t firstIndex, uint32_t indexCount, vk::DeviceSize byteOffset, int materialIndex, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes);
+
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::Buffer& globalVertexBuffer) const;
+
+private:
+    uint32_t firstIndex;   // Index de départ dans le globalIndexBuffer
+    uint32_t indexCount;   // Nombre d'indices à dessiner
+    vk::DeviceSize byteOffset;
+    int      materialIndex;
+    vk::VertexInputBindingDescription2EXT vertexBindingDescription;
+    std::vector<vk::VertexInputAttributeDescription2EXT> vertexAttributeDescriptions;
+};
+
+class GltfMesh {
+public:
+    // Reçoit simplement les primitives déjà construites
+    GltfMesh() = default;
+    void addPrimitive(GltfPrimitive&& primitive) {
+        primitives.push_back(std::move(primitive));
+    }
+    
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::Buffer& globalVertexBuffer) const {
+        for (auto& primitive : primitives) {
+            primitive.draw(commandBuffer, globalVertexBuffer);
+        }
+    }
+private:
+    std::vector<GltfPrimitive> primitives;
+};
+
+class GltfModel;
+
+class GltfNode {
+public:
+    // Constructeur simple sans Vulkan
+    GltfNode(GltfModel& model, tinygltf::Model& root, tinygltf::Node node, glm::mat4 parent_node_transform);
+
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, glm::mat4 parentMatrix, vk::raii::Buffer& globalVertexBuffer) const {
+        glm::mat4 globalTransform = parentMatrix * node_transform;
+
+        if (mesh) {
+            // Exemple : Envoi de la matrice finale via Push Constants avant de draw le mesh
+            commandBuffer.pushConstants<glm::mat4>(pipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, globalTransform);
+            mesh->draw(commandBuffer, globalVertexBuffer);
+        }
+
+        for (auto& child : children) {
+            child.draw(commandBuffer, pipelineLayout, globalTransform, globalVertexBuffer);
+        }
+    }
+
+private:
+    const GltfMesh* mesh;
+    std::vector<GltfNode> children;
+    glm::mat4 node_transform;
+};
+
+class GltfModel {
+public:
+    GltfModel(const std::string& path, vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice, vk::raii::CommandPool& commandPool, vk::raii::Queue& graphicsQueue);
+    ~GltfModel() = default;
+
+    // Ajout du pipelineLayout pour mettre à jour les transformations des nodes lors du dessin
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout) {
+        // 1. Bind des buffers globaux UNE SEULE FOIS pour tout le modèle
+        // commandBuffer.bindVertexBuffers(0, {*globalVertexBuffer}, {0}); // Supprimé, géré par primitive
+        commandBuffer.bindIndexBuffer(*globalIndexBuffer, 0, vk::IndexType::eUint32);
+
+        // 2. Calcul de la matrice du modèle de base
+        glm::mat4 modelMatrix = getModelMatrix();
+
+        // 3. On lance le dessin récursif sur les nœuds racines (root nodes)
+        for (auto& node : rootNodes) {
+            node.draw(commandBuffer, pipelineLayout, modelMatrix, globalVertexBuffer);
+        }
+    }
+
+    // Liste des meshes
+    std::vector<GltfMesh> meshes;
+
+private:
+    std::vector<unsigned char> globalVertexData;
+    std::vector<uint32_t> indices;
+
+    vk::raii::Buffer globalVertexBuffer = nullptr;
+    vk::raii::DeviceMemory globalVertexMemory = nullptr;
+    
+    vk::raii::Buffer globalIndexBuffer = nullptr;
+    vk::raii::DeviceMemory globalIndexMemory = nullptr;
+
+    // Les nœuds racines du glTF
+    std::vector<GltfNode> rootNodes;
+
+    // Propriétés de transformation globales de l'objet
+    glm::vec3 position = {0.0f, 0.0f, 0.0f};
+    glm::vec3 rotation = {0.0f, 0.0f, 0.0f};
+    glm::vec3 scale = {1.0f, 1.0f, 1.0f};
+
+    glm::mat4 getModelMatrix() const {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), position);
+        model = glm::rotate(model, rotation.x, {1.0f, 0.0f, 0.0f});
+        model = glm::rotate(model, rotation.y, {0.0f, 1.0f, 0.0f});
+        model = glm::rotate(model, rotation.z, {0.0f, 0.0f, 1.0f});
+        return glm::scale(model, scale);
+    }
+
+    vk::raii::Device* device = nullptr;
+    vk::raii::PhysicalDevice *physicalDevice;
+    vk::raii::CommandPool *commandPool;
+    vk::raii::Queue *graphicsQueue;
+
+    // Méthodes internes de génération
+    void createVertexBuffer();
+    void createIndexBuffer();
+};

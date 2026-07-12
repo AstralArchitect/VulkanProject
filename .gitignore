@@ -1,5 +1,6 @@
 builddir/
 packagecache/
+tinygltf-*/
 glfw-*/
 glm-*/
 subprojects/tinyobjloader/
