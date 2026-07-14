@@ -168,8 +168,16 @@ vk::SampleCountFlagBits VulkanApp::getMaxUsableSampleCount() {
 }
 
 void VulkanApp::createColorResources() {
-    vk::Format colorFormat = swapChainSurfaceFormat.format;
+    vk::Format colorFormat = findSupportedFormat(
+        {vk::Format::eR16G16B16A16Sfloat, vk::Format::eR8G8B8A8Unorm, vk::Format::eB8G8R8A8Unorm},
+        vk::ImageTiling::eOptimal,
+        vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eSampledImage);
 
-    std::tie(colorImage, colorImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, colorFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
+    vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled;
+
+    std::tie(colorImage, colorImageMemory) = VulkanUtils::createImage(
+        device, physicalDevice, swapChainExtent.width, swapChainExtent.height,
+        colorFormat, vk::ImageTiling::eOptimal, usage,
+        vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
     colorImageView = VulkanUtils::createImageView(device, *colorImage, colorFormat, vk::ImageAspectFlagBits::eColor);
 }

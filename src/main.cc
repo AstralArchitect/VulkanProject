@@ -9,6 +9,7 @@
 #include "vulkan_app.hpp"
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
+const double PI = 3.1415926535;
 
 void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 {
@@ -43,8 +44,6 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
         .transformOffset = 0};
     const vk::AccelerationStructureBuildRangeInfoKHR *pBuildRange = &buildRange;
     commandBuffer.buildAccelerationStructuresKHR(buildInfo, pBuildRange);
-    // --- SYNCHRONISATION (Pipeline Barrier) ---
-    // On s'assure que la TLAS est entièrement construite avant que le shader ne tente de la lire
     vk::MemoryBarrier barrier{
         .srcAccessMask = vk::AccessFlagBits::eAccelerationStructureWriteKHR,
         .dstAccessMask = vk::AccessFlagBits::eAccelerationStructureReadKHR};
@@ -54,14 +53,14 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
         {}, barrier, nullptr, nullptr);
 
     // Before starting rendering, transition the swapchain image to
-    // vk::ImageLayout::eColorAttachmentOptimal
+    // vk::ImageLayout::eGeneral (for compute writing)
     transition_image_layout(
         imageIndex, vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        {},                                                 // srcAccessMask (no need to wait for previous operations)
-        vk::AccessFlagBits2::eColorAttachmentWrite,         // dstAccessMask
+        vk::ImageLayout::eGeneral,
+        {},                                                 // srcAccessMask
+        vk::AccessFlagBits2::eShaderWrite,                  // dstAccessMask
         vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
-        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // dstStage
+        vk::PipelineStageFlagBits2::eComputeShader,         // dstStage
         vk::ImageAspectFlagBits::eColor);
 
     // Transition depth image to depth attachment optimal layout
@@ -86,6 +85,17 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
         vk::PipelineStageFlagBits2::eColorAttachmentOutput, // dstStage
         vk::ImageAspectFlagBits::eColor);
 
+    for (int i = 0; i < sizeof(renderImages) / sizeof(vk::raii::Image); i++) {
+    transition_image_layout(
+        &(renderImages[i]), vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        {},                                                 // srcAccessMask
+        vk::AccessFlagBits2::eColorAttachmentWrite,         // dstAccessMask
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // dstStage
+        vk::ImageAspectFlagBits::eColor);
+    }
+
     vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.f);
     vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
 
@@ -96,22 +106,35 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
         .storeOp = vk::AttachmentStoreOp::eDontCare,
         .clearValue = clearDepth};
 
-    vk::RenderingAttachmentInfo attachmentInfo = {
+    std::array<vk::RenderingAttachmentInfo, 3> colorAttachments = {};
+    colorAttachments[0] = vk::RenderingAttachmentInfo{
         .imageView = *colorImageView,
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        .resolveMode = vk::ResolveModeFlagBits::eAverage,
-        .resolveImageView = *swapChainImageViews[imageIndex],
-        .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eStore,
-        .clearValue = clearColor};
-
+        .clearValue = clearColor
+    };
+    colorAttachments[1] = vk::RenderingAttachmentInfo{
+        .imageView = *renderImagesView[0],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f)
+    };
+    colorAttachments[2] = vk::RenderingAttachmentInfo{
+        .imageView = *renderImagesView[1],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f)
+    };
     vk::RenderingInfo renderingInfo = {
         .renderArea = {.offset = {0, 0}, .extent = swapChainExtent},
         .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &attachmentInfo,
-        .pDepthAttachment = &depthAttachmentInfo};
+        .colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size()),
+        .pColorAttachments = colorAttachments.data(),
+        .pDepthAttachment = &depthAttachmentInfo
+    };
 
     commandBuffer.beginRendering(renderingInfo);
 
@@ -132,21 +155,55 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.endRendering();
 
-    // After rendering, transition the swapchain image to
-    // vk::ImageLayout::ePresentSrcKHR
     transition_image_layout(
-        imageIndex, vk::ImageLayout::eColorAttachmentOptimal,
+        &colorImage, vk::ImageLayout::eColorAttachmentOptimal,
+        vk::ImageLayout::eShaderReadOnlyOptimal,
+        vk::AccessFlagBits2::eColorAttachmentWrite,
+        vk::AccessFlagBits2::eShaderRead,
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits2::eComputeShader,
+        vk::ImageAspectFlagBits::eColor);
+    for (int i = 0; i < sizeof(renderImages) / sizeof(vk::raii::Image); i++) {
+        transition_image_layout(
+            &renderImages[i], vk::ImageLayout::eColorAttachmentOptimal,
+            vk::ImageLayout::eShaderReadOnlyOptimal,
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::AccessFlagBits2::eShaderRead,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eComputeShader,
+            vk::ImageAspectFlagBits::eColor);
+    }
+    transition_image_layout(
+        &depthImage, vk::ImageLayout::eDepthAttachmentOptimal,
+        vk::ImageLayout::eShaderReadOnlyOptimal,
+        vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        vk::AccessFlagBits2::eShaderRead,
+        vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
+        vk::PipelineStageFlagBits2::eComputeShader,
+        vk::ImageAspectFlagBits::eDepth);
+
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *compositionPipeline);
+    commandBuffer.bindDescriptorSets(
+        vk::PipelineBindPoint::eCompute,
+        *compositionPipelineLayout,
+        0,
+        *compositionDescriptorSets[imageIndex],
+        nullptr);
+    uint32_t groupCountX = (swapChainExtent.width + 15) / 16;
+    uint32_t groupCountY = (swapChainExtent.height + 15) / 16;
+    commandBuffer.dispatch(groupCountX, groupCountY, 1);
+
+    transition_image_layout(
+        imageIndex, vk::ImageLayout::eGeneral,
         vk::ImageLayout::ePresentSrcKHR,
-        vk::AccessFlagBits2::eColorAttachmentWrite,         // srcAccessMask
-        {},                                                 // dstAccessMask
-        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
-        vk::PipelineStageFlagBits2::eBottomOfPipe,          // dstStage
+        vk::AccessFlagBits2::eShaderWrite,
+        {},
+        vk::PipelineStageFlagBits2::eComputeShader,
+        vk::PipelineStageFlagBits2::eBottomOfPipe,
         vk::ImageAspectFlagBits::eColor);
 
     commandBuffer.end();
 }
-
-const double PI = 3.1415926535;
 
 void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 {
@@ -175,6 +232,36 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 
         ubo.lightsPos[i] = glm::vec4(position, 1.f);
     }
+
+    // Placement des aiguilles
+    models[3]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.075f));
+    models[3]->modelTransform = glm::translate(models[3]->modelTransform, glm::vec3(0.f, 7.0f, 2.f));
+    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 1.0f, 0.f));
+    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 0.0f, 1.f));
+    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(-90.f), glm::vec3(0.f, 1.0f, 0.f));
+
+    models[4]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.075f));
+    models[4]->modelTransform = glm::translate(models[4]->modelTransform, glm::vec3(0.f, 7.0f, 2.f));
+    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 1.0f, 0.f));
+    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 0.0f, 1.f));
+    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(-90.f), glm::vec3(0.f, 1.0f, 0.f));
+
+    // Alignement sur l'heure actuelle
+    // get the actual time
+    auto now_time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+    // Convert to local time components
+    struct tm* local_time = localtime(&now_time);  // or gmtime() for UTC
+
+    int8_t minutes = local_time->tm_min;
+    int32_t hours = local_time->tm_hour;
+
+    if (hours == 0) {
+        hours = 12; // Convert 0 to 12 for midnight/noon
+    }
+    // convert the actual time into degrees
+    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(minutes * 6.f), glm::vec3(0.0, -1.0, 0.0));
+    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(hours * 30.f), glm::vec3(0.0, -1.0, 0.0));
 
     memcpy(cameraUniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }
@@ -264,15 +351,46 @@ void VulkanApp::loadModels()
         graphicsQueue,
         textureManager));
 
+    models[0]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.5f));
+
     models.push_back(std::make_unique<GltfModel>(
-        "res/models/plan.glb",
+        "res/models/mirror.glb",
         device,
         physicalDevice,
         commandPool,
         graphicsQueue,
         textureManager));
 
-    models[1]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(10.f));
+    models[1]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.5f));
+    models[1]->modelTransform = glm::translate(models[1]->modelTransform, glm::vec3(-2.f, 0.0f, -1.25f));
+    models[1]->modelTransform = glm::rotate(models[1]->modelTransform, glm::radians(225.f), glm::vec3(0.f, 1.0f, 0.f));
+
+    models.push_back(std::make_unique<GltfModel>(
+        "res/models/armoire.glb",
+        device,
+        physicalDevice,
+        commandPool,
+        graphicsQueue,
+        textureManager));
+
+    models[2]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(2.f));
+    models[2]->modelTransform = glm::translate(models[2]->modelTransform, glm::vec3(0.f, 0.f, 0.f));
+
+    models.push_back(std::make_unique<GltfModel>(
+        "res/models/aiguille.glb",
+        device,
+        physicalDevice,
+        commandPool,
+        graphicsQueue,
+        textureManager));
+
+    models.push_back(std::make_unique<GltfModel>(
+        "res/models/aiguille_heure.glb",
+        device,
+        physicalDevice,
+        commandPool,
+        graphicsQueue,
+        textureManager));
 }
 
 void VulkanApp::mainLoop()

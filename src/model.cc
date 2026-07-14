@@ -6,7 +6,7 @@
 #include "vulkan_utils.hpp"
 #include "text_manager.hpp"
 
-GltfMaterial::GltfMaterial(const tinygltf::Model &root, tinygltf::Material material, bool hasNormals, TextureManager &textureManager)
+GltfMaterial::GltfMaterial(const tinygltf::Model &root, tinygltf::Material material, bool hasNormals, TextureManager &textureManager, const std::string& modelPath)
 {
     std::copy(material.pbrMetallicRoughness.baseColorFactor.cbegin(), material.pbrMetallicRoughness.baseColorFactor.cbegin() + 3, basecolor);
     metallic_factor = material.pbrMetallicRoughness.metallicFactor;
@@ -16,20 +16,23 @@ GltfMaterial::GltfMaterial(const tinygltf::Model &root, tinygltf::Material mater
     tinygltf::TextureInfo metallic_roughness_texinfo = material.pbrMetallicRoughness.metallicRoughnessTexture;
 
     features = 0;
+    std::cout << "[DEBUG] GltfMaterial '" << material.name << "' loaded. BaseColorFactor = [" << basecolor[0] << ", " << basecolor[1] << ", " << basecolor[2] << "]\n";
     if (basecolor_texinfo.index >= 0)
     {
         features |= 1; // Set bit 0 for base color texture
-        baseColorTextureIndex = textureManager.loadTexture(root, basecolor_texinfo.index);
+        baseColorTextureIndex = textureManager.loadTexture(root, basecolor_texinfo.index, modelPath);
+        std::cout << "[DEBUG] Base color texture found! Index: " << basecolor_texinfo.index << ", Global Index: " << baseColorTextureIndex.value_or(0) << "\n";
     }
     else
     {
+        std::cout << "[DEBUG] No base color texture found for material '" << material.name << "'\n";
         baseColorTextureIndex = std::nullopt; // No texture
     }
 
     if (metallic_roughness_texinfo.index >= 0)
     {
         features |= 2; // Set bit 1 for metallic roughness texture
-        metallicRoughnessTextureIndex = textureManager.loadTexture(root, metallic_roughness_texinfo.index);
+        metallicRoughnessTextureIndex = textureManager.loadTexture(root, metallic_roughness_texinfo.index, modelPath, false);
     }
     else
     {
@@ -73,7 +76,7 @@ void GltfPrimitive::draw(vk::raii::CommandBuffer &commandBuffer, vk::raii::Pipel
     commandBuffer.drawIndexed(indexCount, 1, firstIndex, 0, 0);
 }
 
-GltfPrimitive::GltfPrimitive(const tinygltf::Model &root, uint32_t primfirstIndex, uint32_t primIndexCount, uint32_t primVertexCount, vk::DeviceSize primByteOffset, tinygltf::Material gltfMaterial, bool hasNormals, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes, TextureManager &textureManager)
+GltfPrimitive::GltfPrimitive(const tinygltf::Model &root, uint32_t primfirstIndex, uint32_t primIndexCount, uint32_t primVertexCount, vk::DeviceSize primByteOffset, tinygltf::Material gltfMaterial, bool hasNormals, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes, TextureManager &textureManager, const std::string& modelPath)
 {
     firstIndex = primfirstIndex;
     indexCount = primIndexCount;
@@ -82,7 +85,7 @@ GltfPrimitive::GltfPrimitive(const tinygltf::Model &root, uint32_t primfirstInde
     vertexBindingDescription = binding;
     vertexAttributeDescriptions = attributes;
 
-    material = GltfMaterial(root, gltfMaterial, hasNormals, textureManager);
+    material = GltfMaterial(root, gltfMaterial, hasNormals, textureManager, modelPath);
 }
 
 void GltfMesh::buildBlas(
@@ -321,6 +324,7 @@ GltfModel::GltfModel(const std::string &path, vk::raii::Device &device, vk::raii
     std::string err;
     std::string warn;
 
+    std::cout << "[DEBUG] --- Loading glTF model from path: " << path << " ---\n";
     bool ret = loader.LoadBinaryFromFile(&model, &err, &warn, path);
 
     if (!warn.empty())
@@ -364,11 +368,14 @@ GltfModel::GltfModel(const std::string &path, vk::raii::Device &device, vk::raii
             const tinygltf::BufferView *texCoordBufferView = nullptr;
             const tinygltf::Buffer *texCoordBuffer = nullptr;
 
+            std::cout << "[DEBUG] Primitive hasTexCoords: " << (hasTexCoords ? "true" : "false") << "\n";
+
             if (hasTexCoords)
             {
                 texCoordAccessor = &model.accessors[primitive.attributes.at("TEXCOORD_0")];
                 texCoordBufferView = &model.bufferViews[texCoordAccessor->bufferView];
                 texCoordBuffer = &model.buffers[texCoordBufferView->buffer];
+                std::cout << "[DEBUG] TEXCOORD_0 componentType: " << texCoordAccessor->componentType << "\n";
             }
 
             // Get normals if available
@@ -449,8 +456,27 @@ GltfModel::GltfModel(const std::string &path, vk::raii::Device &device, vk::raii
 
                 if (hasTexCoords)
                 {
-                    const float *texCoord = reinterpret_cast<const float *>(&texCoordBuffer->data[texCoordBufferView->byteOffset + texCoordAccessor->byteOffset + i * texStride]);
-                    float t[2] = {texCoord[0], texCoord[1]};
+                    float t[2] = {0.0f, 0.0f};
+                    const unsigned char *tcPtr = &texCoordBuffer->data[texCoordBufferView->byteOffset + texCoordAccessor->byteOffset + i * texStride];
+
+                    if (texCoordAccessor->componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                        const float *texCoord = reinterpret_cast<const float *>(tcPtr);
+                        t[0] = texCoord[0];
+                        t[1] = texCoord[1];
+                    } else if (texCoordAccessor->componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                        const uint16_t *texCoord = reinterpret_cast<const uint16_t *>(tcPtr);
+                        t[0] = texCoord[0] / 65535.0f;
+                        t[1] = texCoord[1] / 65535.0f;
+                    } else if (texCoordAccessor->componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+                        const uint8_t *texCoord = reinterpret_cast<const uint8_t *>(tcPtr);
+                        t[0] = texCoord[0] / 255.0f;
+                        t[1] = texCoord[1] / 255.0f;
+                    }
+
+                    if (i < 3) {
+                        std::cout << "[DEBUG] Vertex " << i << " UV: (" << t[0] << ", " << t[1] << ")\n";
+                    }
+
                     unsigned char *tBytes = reinterpret_cast<unsigned char *>(t);
                     globalVertexData.insert(globalVertexData.end(), tBytes, tBytes + sizeof(t));
                 }
@@ -506,7 +532,7 @@ GltfModel::GltfModel(const std::string &path, vk::raii::Device &device, vk::raii
             tinygltf::Material material = model.materials[primitive.material];
 
             // Create a GltfPrimitive and add it to the GltfMesh
-            GltfPrimitive gltfPrimitive(model, firstIndex, static_cast<uint32_t>(indexCount), posAccessor.count, byteOffset, material, hasNormals, binding, attributes, textureManager);
+            GltfPrimitive gltfPrimitive(model, firstIndex, static_cast<uint32_t>(indexCount), posAccessor.count, byteOffset, material, hasNormals, binding, attributes, textureManager, path);
             gltfMesh.addPrimitive(std::move(gltfPrimitive));
         }
     }

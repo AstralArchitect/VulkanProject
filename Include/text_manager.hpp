@@ -19,7 +19,7 @@ class TextureManager {
         ~TextureManager() = default;
 
         void init(vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice, vk::raii::CommandPool& commandPool, vk::raii::Queue& graphicsQueue);
-        uint32_t loadTexture(const tinygltf::Model& texture, int textureIndex);
+        uint32_t loadTexture(const tinygltf::Model& texture, int textureIndex, const std::string& modelPath, bool isSRGB = true);
 
         const vk::raii::DescriptorSetLayout& getDescriptorSetLayout() const { return descriptorSetLayout; }
         const vk::raii::DescriptorSet& getDescriptorSet() const { return descriptorSet; }
@@ -47,7 +47,7 @@ class TextureManager {
         // Le set de descripteurs final qui contient le tableau de toutes nos textures
         vk::raii::DescriptorSet descriptorSet = nullptr;
 
-        std::map<std::pair<const tinygltf::Model*, int>, uint32_t> gltfTextureCache;
+        std::map<std::pair<std::string, int>, uint32_t> gltfTextureCache;
         std::vector<Texture> textures;
 
         void createFallbackTexture();

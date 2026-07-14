@@ -82,8 +82,8 @@ void TextureManager::init(vk::raii::Device& device, vk::raii::PhysicalDevice& ph
     createFallbackTexture();
 }
 
-uint32_t TextureManager::loadTexture(const tinygltf::Model& model, int textureIndex) {
-    auto cacheKey = std::make_pair(&model, textureIndex);
+uint32_t TextureManager::loadTexture(const tinygltf::Model& model, int textureIndex, const std::string& modelPath, bool isSRGB) {
+    auto cacheKey = std::make_pair(modelPath, textureIndex);
     auto it = gltfTextureCache.find(cacheKey);
     if (it != gltfTextureCache.end()) {
         return it->second;
@@ -96,7 +96,8 @@ uint32_t TextureManager::loadTexture(const tinygltf::Model& model, int textureIn
         .mipLevels = 0
     };
     createTextureImage(model, textureIndex, texture);
-    texture.imageView = VulkanUtils::createImageView(*device, *texture.image, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, texture.mipLevels);
+    vk::Format format = isSRGB ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm;
+    texture.imageView = VulkanUtils::createImageView(*device, *texture.image, format, vk::ImageAspectFlagBits::eColor, texture.mipLevels);
 
     uint32_t newIndex = static_cast<uint32_t>(textures.size());
     textures.push_back(std::move(texture));

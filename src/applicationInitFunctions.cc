@@ -19,7 +19,8 @@ constexpr bool enableValidationLayers = true;
 #ifdef _WIN32
 #include <windows.h>
 
-void sleep_ms(DWORD milliseconds) {
+void sleep_ms(DWORD milliseconds)
+{
     Sleep(milliseconds);
 }
 
@@ -27,7 +28,8 @@ void sleep_ms(DWORD milliseconds) {
 
 #include <time.h>
 
-void sleep_ms(unsigned long milliseconds) {
+void sleep_ms(unsigned long milliseconds)
+{
     struct timespec ts;
 
     ts.tv_sec = milliseconds / 1000;
@@ -77,30 +79,33 @@ void VulkanApp::processInput(GLFWwindow *window)
     {
         camera.ProcessKeyboard(RIGHT, deltaTime);
         camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
-    }/*
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+    } /*
+     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+     {
+         camera.ProcessKeyboard(FORWARD, deltaTime);
+     }
+     else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+     {
+         camera.ProcessKeyboard(BACKWARD, deltaTime);
+     }*/
+
+    if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS)
     {
-        camera.ProcessKeyboard(FORWARD, deltaTime);
-    }
-    else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-    {
-        camera.ProcessKeyboard(BACKWARD, deltaTime);
-    }*/
-    
-    if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS) {
-        if (!isFullscreen) {
+        if (!isFullscreen)
+        {
             glfwGetWindowSize(window, &windowedWidth, &windowedHeight);
             glfwGetWindowPos(window, &windowedPosX, &windowedPosY);
 
-            const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+            const GLFWvidmode *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
             glfwSetWindowMonitor(window, glfwGetPrimaryMonitor(), 0, 0, mode->width, mode->height, mode->refreshRate);
-        } else {
+        }
+        else
+        {
             glfwSetWindowMonitor(window, NULL, windowedPosX, windowedPosY, windowedWidth, windowedHeight, 0);
         }
         isFullscreen = !isFullscreen;
         sleep_ms(100);
     }
-    
 }
 
 void VulkanApp::initWindow()
@@ -131,7 +136,7 @@ void VulkanApp::initWindow()
 }
 
 void VulkanApp::initVulkan()
-{   
+{
     createInstance();
     setupDebugMessenger();
     createSurface();
@@ -155,12 +160,13 @@ void VulkanApp::initVulkan()
     createUniformBuffers();
     createColorResources();
     createDepthResources();
+    createRenderResources();
+    createCompositionResources();
 
     createDescriptorPool();
     createDescriptorSets();
     createSyncObjects();
 }
-
 
 void VulkanApp::createInstance()
 {
@@ -262,7 +268,7 @@ void VulkanApp::pickPhysicalDevice()
         if (isDeviceSuitable(device, requiredDeviceExtension))
         {
             physicalDevice = device;
-            msaaSamples = getMaxUsableSampleCount();
+            msaaSamples = vk::SampleCountFlagBits::e1;
             deviceFound = true;
             break;
         }
@@ -306,29 +312,23 @@ void VulkanApp::createLogicalDevice()
 
     // Create a chain of feature structures
     vk::StructureChain<
-        vk::PhysicalDeviceFeatures2, 
-        vk::PhysicalDeviceVulkan12Features, 
+        vk::PhysicalDeviceFeatures2,
+        vk::PhysicalDeviceVulkan12Features,
         vk::PhysicalDeviceVulkan13Features,
-        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, 
+        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
         vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT,
         vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
-        vk::PhysicalDeviceRayQueryFeaturesKHR
-    > featureChain = {
-        {.features = {
-            .samplerAnisotropy = true,
-            .shaderSampledImageArrayDynamicIndexing = true
-        }},
-        {
-            .descriptorBindingPartiallyBound = true,
-            .runtimeDescriptorArray = false,
-            .bufferDeviceAddress = true
-        },
-        {.synchronization2 = true, .dynamicRendering = true},
-        {.extendedDynamicState = true},
-        {.vertexInputDynamicState = true},
-        {.accelerationStructure = true},
-        {.rayQuery = true}
-    };
+        vk::PhysicalDeviceRayQueryFeaturesKHR>
+        featureChain = {
+            {.features = {
+                 .samplerAnisotropy = true,
+                 .shaderSampledImageArrayDynamicIndexing = true}},
+            {.descriptorBindingPartiallyBound = true, .runtimeDescriptorArray = false, .bufferDeviceAddress = true},
+            {.synchronization2 = true, .dynamicRendering = true},
+            {.extendedDynamicState = true},
+            {.vertexInputDynamicState = true},
+            {.accelerationStructure = true},
+            {.rayQuery = true}};
 
     vk::DeviceCreateInfo deviceCreateInfo{
         .pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
@@ -363,18 +363,19 @@ void VulkanApp::createSwapChain()
     std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(*surface);
     uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
 
-    vk::SwapchainCreateInfoKHR swapChainCreateInfo{.surface = *surface,
-                                                   .minImageCount = minImageCount,
-                                                   .imageFormat = swapChainSurfaceFormat.format,
-                                                   .imageColorSpace = swapChainSurfaceFormat.colorSpace,
-                                                   .imageExtent = swapChainExtent,
-                                                   .imageArrayLayers = 1,
-                                                   .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
-                                                   .imageSharingMode = vk::SharingMode::eExclusive,
-                                                   .preTransform = surfaceCapabilities.currentTransform,
-                                                   .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
-                                                   .presentMode = chooseSwapPresentMode(availablePresentModes),
-                                                   .clipped = true};
+    vk::SwapchainCreateInfoKHR swapChainCreateInfo{
+        .surface = *surface,
+        .minImageCount = minImageCount,
+        .imageFormat = swapChainSurfaceFormat.format,
+        .imageColorSpace = swapChainSurfaceFormat.colorSpace,
+        .imageExtent = swapChainExtent,
+        .imageArrayLayers = 1,
+        .imageUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eStorage,
+        .imageSharingMode = vk::SharingMode::eExclusive,
+        .preTransform = surfaceCapabilities.currentTransform,
+        .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+        .presentMode = chooseSwapPresentMode(availablePresentModes),
+        .clipped = true};
 
     swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
     swapChainImages = swapChain.getImages();
@@ -408,9 +409,9 @@ void VulkanApp::createDescriptorSetLayout()
                                                     .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment};
 
     std::array global_bindings = {
-        vk::DescriptorSetLayoutBinding( 0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
-        vk::DescriptorSetLayoutBinding( 1, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
-        vk::DescriptorSetLayoutBinding( 2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
     };
 
     std::array<vk::DescriptorSetLayoutBinding, global_bindings.size()> bindings = global_bindings;
@@ -460,16 +461,18 @@ void VulkanApp::createGraphicsPipeline()
         .rasterizationSamples = msaaSamples,
         .sampleShadingEnable = vk::False};
 
-    vk::PipelineColorBlendAttachmentState colorBlendAttachment{
-        .blendEnable = vk::False,
-        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
-
+    std::array<vk::PipelineColorBlendAttachmentState, 3> colorBlendAttachments;
+    for (auto &attachment : colorBlendAttachments)
+    {
+        attachment.blendEnable = vk::False;
+        attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                    vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    }
     vk::PipelineColorBlendStateCreateInfo colorBlending{
         .logicOpEnable = vk::False,
         .logicOp = vk::LogicOp::eCopy,
-        .attachmentCount = 1,
-        .pAttachments = &colorBlendAttachment};
+        .attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size()),
+        .pAttachments = colorBlendAttachments.data()};
 
     vk::PipelineDepthStencilStateCreateInfo depthStencil{
         .depthTestEnable = vk::True,
@@ -479,21 +482,30 @@ void VulkanApp::createGraphicsPipeline()
         .stencilTestEnable = vk::False};
 
     vk::PushConstantRange pushConstantRange{
-        // Accessible par le Vertex Shader ET le Fragment Shader
         .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
         .offset = 0,
-        .size = sizeof(MeshPushConstants) // Utilise la taille de notre nouvelle structure (72 octets)
-    };
+        .size = sizeof(MeshPushConstants)};
 
     std::array<vk::DescriptorSetLayout, 2> layouts = {
-        *descriptorSetLayout,                      // Correspond au Set 0 (Caméra)
-        *textureManager.getDescriptorSetLayout()  // Correspond au Set 1 (Textures, géré par le texture manager)
+        *descriptorSetLayout,                    // Set 0 (Caméra)
+        *textureManager.getDescriptorSetLayout() // Set 1 (Textures)
     };
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
-        .setLayoutCount = static_cast<uint32_t>(layouts.size()), // Vaut 2
+        .setLayoutCount = static_cast<uint32_t>(layouts.size()),
         .pSetLayouts = layouts.data(),
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &pushConstantRange};
+
+    vk::Format renderFormat = findSupportedFormat(
+        {vk::Format::eR16G16B16A16Sfloat, vk::Format::eR8G8B8A8Unorm, vk::Format::eB8G8R8A8Unorm},
+        vk::ImageTiling::eOptimal,
+        vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eSampledImage);
+
+    std::array<vk::Format, 3> colorFormats = {
+        renderFormat,
+        renderFormat,
+        renderFormat
+    };
 
     pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
@@ -510,8 +522,8 @@ void VulkanApp::createGraphicsPipeline()
          .pDynamicState = &dynamicState,
          .layout = pipelineLayout,
          .renderPass = nullptr},
-        {.colorAttachmentCount = 1,
-         .pColorAttachmentFormats = &swapChainSurfaceFormat.format,
+        {.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size()),
+         .pColorAttachmentFormats = colorFormats.data(),
          .depthAttachmentFormat = findDepthFormat()}};
 
     graphicsPipeline =
@@ -641,88 +653,84 @@ void VulkanApp::createTlas()
 {
     uint32_t maxInstances = 0;
     uint32_t maxPrimitives = 0;
-    for (const auto& model : models) {
-        maxInstances += model->getMeshInstanceCount(); 
+    for (const auto &model : models)
+    {
+        maxInstances += model->getMeshInstanceCount();
         maxPrimitives += model->getPrimitiveInstanceCount();
     }
-    if (maxInstances == 0) return;
+    if (maxInstances == 0)
+        return;
 
     vk::DeviceSize bufferSize = sizeof(vk::AccelerationStructureInstanceKHR) * maxInstances;
-    
+
     std::tie(instancesBuffer, instancesBufferMemory) = VulkanUtils::createBuffer(
         device, physicalDevice, bufferSize,
         vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
-    );
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
     vk::DeviceSize instanceDataBufferSize = sizeof(InstanceData) * maxPrimitives;
     std::tie(instanceDataBuffer, instanceDataBufferMemory) = VulkanUtils::createBuffer(
         device, physicalDevice, instanceDataBufferSize,
         vk::BufferUsageFlagBits::eStorageBuffer,
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
-    );
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
     instanceDataBufferMapped = instanceDataBufferMemory.mapMemory(0, instanceDataBufferSize);
 
     instancesBufferMapped = instancesBufferMemory.mapMemory(0, bufferSize);
-    vk::BufferDeviceAddressInfo instancesAddrInfo{ .buffer = *instancesBuffer };
+    vk::BufferDeviceAddressInfo instancesAddrInfo{.buffer = *instancesBuffer};
     vk::DeviceAddress instancesDeviceAddress = device.getBufferAddress(instancesAddrInfo);
     vk::AccelerationStructureGeometryInstancesDataKHR instancesData{
         .arrayOfPointers = vk::False,
-        .data = instancesDeviceAddress
-    };
+        .data = instancesDeviceAddress};
     vk::AccelerationStructureGeometryKHR geometry{
         .geometryType = vk::GeometryTypeKHR::eInstances,
-        .geometry = instancesData
-    };
+        .geometry = instancesData};
     vk::AccelerationStructureBuildGeometryInfoKHR buildInfo{
         .type = vk::AccelerationStructureTypeKHR::eTopLevel,
         .flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild, // Rapidité de build privilégiée car reconstruite chaque frame
         .mode = vk::BuildAccelerationStructureModeKHR::eBuild,
         .geometryCount = 1,
-        .pGeometries = &geometry
-    };
+        .pGeometries = &geometry};
     vk::AccelerationStructureBuildSizesInfoKHR buildSizes = device.getAccelerationStructureBuildSizesKHR(
         vk::AccelerationStructureBuildTypeKHR::eDevice,
         buildInfo,
-        maxInstances
-    );
+        maxInstances);
     std::tie(tlasBuffer, tlasBufferMemory) = VulkanUtils::createBuffer(
         device, physicalDevice, buildSizes.accelerationStructureSize,
         vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-        vk::MemoryPropertyFlagBits::eDeviceLocal
-    );
+        vk::MemoryPropertyFlagBits::eDeviceLocal);
 
     vk::AccelerationStructureCreateInfoKHR createInfo{
         .buffer = *tlasBuffer,
         .offset = 0,
         .size = buildSizes.accelerationStructureSize,
-        .type = vk::AccelerationStructureTypeKHR::eTopLevel
-    };
+        .type = vk::AccelerationStructureTypeKHR::eTopLevel};
     tlasHandle = device.createAccelerationStructureKHR(createInfo);
 
     std::tie(tlasScratchBuffer, tlasScratchBufferMemory) = VulkanUtils::createBuffer(
         device, physicalDevice, buildSizes.buildScratchSize,
         vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-        vk::MemoryPropertyFlagBits::eDeviceLocal
-    );
+        vk::MemoryPropertyFlagBits::eDeviceLocal);
 }
 
 void VulkanApp::updateTlasInstances()
 {
     std::vector<vk::AccelerationStructureInstanceKHR> instances;
     std::vector<InstanceData> instanceData;
-    
+
     uint32_t customIndexOffset = 0;
-    for (const auto &model : models) {
+    for (const auto &model : models)
+    {
         model->populateTlasInstances(instances, instanceData, device, customIndexOffset);
     }
 
     blasInstancesCount = instances.size();
 
-    if (instances.empty()) return;
+    if (instances.empty())
+        return;
 
     std::memcpy(instancesBufferMapped, instances.data(), sizeof(vk::AccelerationStructureInstanceKHR) * instances.size());
-    if (!instanceData.empty()) {
+    if (!instanceData.empty())
+    {
         std::memcpy(instanceDataBufferMapped, instanceData.data(), sizeof(InstanceData) * instanceData.size());
     }
 }
@@ -759,8 +767,166 @@ void VulkanApp::createDepthResources()
 {
     vk::Format depthFormat = findDepthFormat();
 
-    std::tie(depthImage, depthImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
+    std::tie(depthImage, depthImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
     depthImageView = VulkanUtils::createImageView(device, *depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+}
+
+void VulkanApp::createRenderResources()
+{
+    vk::Format renderFormat = findSupportedFormat(
+        {vk::Format::eR16G16B16A16Sfloat, vk::Format::eR8G8B8A8Unorm, vk::Format::eB8G8R8A8Unorm},
+        vk::ImageTiling::eOptimal,
+        vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eSampledImage);
+
+    vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled;
+
+    for (int i = 0; i < sizeof(renderImages) / sizeof(vk::raii::Image); i++)
+    {
+        std::tie(renderImages[i], renderImagesMemory[i]) = VulkanUtils::createImage(
+            device, physicalDevice, swapChainExtent.width, swapChainExtent.height,
+            renderFormat, vk::ImageTiling::eOptimal, usage,
+            vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
+
+        renderImagesView[i] = VulkanUtils::createImageView(
+            device, *(renderImages[i]), renderFormat, vk::ImageAspectFlagBits::eColor);
+    }
+}
+
+void VulkanApp::createCompositionResources()
+{
+    // Clean up existing resources in the correct RAII order (sets then pool)
+    compositionDescriptorSets.clear();
+    compositionDescriptorPool = nullptr;
+    compositionPipeline = nullptr;
+    compositionPipelineLayout = nullptr;
+    compositionDescriptorSetLayout = nullptr;
+
+    // 1. Descriptor Set Layout
+    std::array<vk::DescriptorSetLayoutBinding, 5> bindings = {
+        vk::DescriptorSetLayoutBinding{
+            .binding = 0,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        vk::DescriptorSetLayoutBinding{
+            .binding = 1,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        vk::DescriptorSetLayoutBinding{
+            .binding = 2,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        vk::DescriptorSetLayoutBinding{
+            .binding = 3,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        vk::DescriptorSetLayoutBinding{
+            .binding = 4,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute}};
+
+    vk::DescriptorSetLayoutCreateInfo layoutInfo{
+        .bindingCount = static_cast<uint32_t>(bindings.size()),
+        .pBindings = bindings.data()};
+    compositionDescriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
+
+    // 2. Pipeline Layout
+    vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+        .setLayoutCount = 1,
+        .pSetLayouts = &(*compositionDescriptorSetLayout)};
+    compositionPipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
+
+    // 3. Compute Pipeline
+    vk::raii::ShaderModule shaderModule = createShaderModule(readFile("builddir/composition.spv"));
+    vk::ComputePipelineCreateInfo pipelineInfo{
+        .stage = vk::PipelineShaderStageCreateInfo{
+            .stage = vk::ShaderStageFlagBits::eCompute,
+            .module = *shaderModule,
+            .pName = "main"},
+        .layout = *compositionPipelineLayout};
+    compositionPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
+
+    // 4. Descriptor Pool
+    uint32_t swapChainImageCount = static_cast<uint32_t>(swapChainImageViews.size());
+    std::array<vk::DescriptorPoolSize, 2> poolSizes = {
+        vk::DescriptorPoolSize{
+            .type = vk::DescriptorType::eSampledImage,
+            .descriptorCount = swapChainImageCount * 4},
+        vk::DescriptorPoolSize{
+            .type = vk::DescriptorType::eStorageImage,
+            .descriptorCount = swapChainImageCount * 1}};
+    vk::DescriptorPoolCreateInfo poolInfo{
+        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        .maxSets = swapChainImageCount,
+        .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
+        .pPoolSizes = poolSizes.data()};
+    compositionDescriptorPool = vk::raii::DescriptorPool(device, poolInfo);
+
+    // 5. Allocate Descriptor Sets
+    std::vector<vk::DescriptorSetLayout> layouts(swapChainImageCount, *compositionDescriptorSetLayout);
+    vk::DescriptorSetAllocateInfo allocInfo{
+        .descriptorPool = *compositionDescriptorPool,
+        .descriptorSetCount = swapChainImageCount,
+        .pSetLayouts = layouts.data()};
+    compositionDescriptorSets = vk::raii::DescriptorSets(device, allocInfo);
+
+    // 6. Update Descriptor Sets
+    for (uint32_t i = 0; i < swapChainImageCount; ++i)
+    {
+        vk::DescriptorImageInfo directColorInfo{
+            .imageView = *colorImageView,
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+        vk::DescriptorImageInfo reflectionInfo{
+            .imageView = *renderImagesView[0],
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+        vk::DescriptorImageInfo normalInfo{
+            .imageView = *renderImagesView[1],
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+        vk::DescriptorImageInfo depthInfo{
+            .imageView = *depthImageView,
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+        vk::DescriptorImageInfo outputImageInfo{
+            .imageView = *swapChainImageViews[i],
+            .imageLayout = vk::ImageLayout::eGeneral};
+
+        std::array<vk::WriteDescriptorSet, 5> descriptorWrites = {
+            vk::WriteDescriptorSet{
+                .dstSet = *compositionDescriptorSets[i],
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eSampledImage,
+                .pImageInfo = &directColorInfo},
+            vk::WriteDescriptorSet{
+                .dstSet = *compositionDescriptorSets[i],
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eSampledImage,
+                .pImageInfo = &reflectionInfo},
+            vk::WriteDescriptorSet{
+                .dstSet = *compositionDescriptorSets[i],
+                .dstBinding = 2,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eSampledImage,
+                .pImageInfo = &normalInfo},
+            vk::WriteDescriptorSet{
+                .dstSet = *compositionDescriptorSets[i],
+                .dstBinding = 3,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eSampledImage,
+                .pImageInfo = &depthInfo},
+            vk::WriteDescriptorSet{
+                .dstSet = *compositionDescriptorSets[i],
+                .dstBinding = 4,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eStorageImage,
+                .pImageInfo = &outputImageInfo}};
+
+        device.updateDescriptorSets(descriptorWrites, nullptr);
+    }
 }
 
 void VulkanApp::createDescriptorPool()
@@ -803,8 +969,7 @@ void VulkanApp::createDescriptorSets()
         vk::AccelerationStructureKHR rawTlas = *tlasHandle;
         vk::WriteDescriptorSetAccelerationStructureKHR asInfo{
             .accelerationStructureCount = 1,
-            .pAccelerationStructures = &rawTlas
-        };
+            .pAccelerationStructures = &rawTlas};
 
         vk::DescriptorBufferInfo instanceDataInfo{
             .buffer = *instanceDataBuffer,
@@ -832,8 +997,7 @@ void VulkanApp::createDescriptorSets()
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
                 .descriptorType = vk::DescriptorType::eStorageBuffer,
-                .pBufferInfo = &instanceDataInfo}
-        };
+                .pBufferInfo = &instanceDataInfo}};
 
         device.updateDescriptorSets(descriptorWrites, {});
     }
@@ -861,6 +1025,8 @@ void VulkanApp::recreateSwapChain()
     createImageViews();
     createColorResources();
     createDepthResources();
+    createRenderResources();
+    createCompositionResources();
 }
 
 void VulkanApp::cleanup()

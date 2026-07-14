@@ -88,6 +88,17 @@ private:
     vk::raii::DeviceMemory depthImageMemory = nullptr;
     vk::raii::ImageView depthImageView = nullptr;
 
+    // Render images (albedo, reflect, normals)
+    vk::raii::Image renderImages[2] = {nullptr, nullptr};
+    vk::raii::DeviceMemory renderImagesMemory[2] = {nullptr, nullptr};
+    vk::raii::ImageView renderImagesView[2] = {nullptr, nullptr};
+
+    vk::raii::DescriptorPool             compositionDescriptorPool = nullptr;
+    vk::raii::DescriptorSetLayout        compositionDescriptorSetLayout = nullptr;
+    vk::raii::PipelineLayout             compositionPipelineLayout = nullptr;
+    vk::raii::Pipeline                   compositionPipeline = nullptr;
+    std::vector<vk::raii::DescriptorSet> compositionDescriptorSets;
+
     vk::raii::Image colorImage = nullptr;
     vk::raii::DeviceMemory colorImageMemory = nullptr;
     vk::raii::ImageView colorImageView = nullptr;
@@ -104,7 +115,6 @@ private:
         alignas(16) glm::vec4 lightsPos[4];  // vec4
     };
 
-    // Dans la classe VulkanApp :
     std::vector<vk::raii::Buffer> cameraUniformBuffers;
     std::vector<vk::raii::DeviceMemory> cameraUniformBuffersMemory;
     std::vector<void*> cameraUniformBuffersMapped;
@@ -169,6 +179,9 @@ private:
     void createDescriptorSets();
     
     void createDepthResources();
+
+    void createRenderResources();
+    void createCompositionResources();
 
     void loadModels();
 

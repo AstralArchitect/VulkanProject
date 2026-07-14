@@ -42,7 +42,6 @@ vulkan_dep = dependency('vulkan')
 # Meson les trouvera s'ils sont dans ton PATH ou si tu utilises des Wraps.
 glfw_dep = dependency('glfw3')
 glm_dep = dependency('glm')
-tinyobjloader_dep = dependency('tinyobjloader')
 
 cmake = import('cmake')
 opt_var = cmake.subproject_options()
@@ -63,7 +62,7 @@ executable(
     'main',
     sources: sources,
     include_directories: include_dir,
-    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinyobjloader_dep, tinygltf_dep],
+    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinygltf_dep],
 )
 
 # --- Compiler les shaders ---
@@ -84,6 +83,23 @@ custom_target(
         '-fvk-use-entrypoint-name',
         '-entry', 'vertMain',
         '-entry', 'fragMain',
+        '-o', '@OUTPUT@', # Le fichier de destination généré par Meson
+    ],
+    build_by_default: true, # Force la compilation même si l'exécutable C++ n'en dépend pas directement
+)
+
+custom_target(
+    'compile_slang_composition',
+    input: 'res/composition.slang',
+    output: 'composition.spv',
+    command: [
+        slangc,
+        '@INPUT@', # Le fichier source (res/shader.slang)
+        '-target', 'spirv', # On spécifie qu'on veut du SPIR-V pour Vulkan
+        '-profile', 'spirv_1_4',
+        '-emit-spirv-directly',
+        '-fvk-use-entrypoint-name',
+        '-entry', 'main',
         '-o', '@OUTPUT@', # Le fichier de destination généré par Meson
     ],
     build_by_default: true, # Force la compilation même si l'exécutable C++ n'en dépend pas directement
