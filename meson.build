@@ -8,6 +8,9 @@ project(
 
 cpp_compiler = meson.get_compiler('cpp')
 
+# Arguments globaux du projet (indispensables pour Vulkan/GLM)
+add_project_arguments('-DGLM_FORCE_DEFAULT_ALIGNED_GENTYPES', '-DGLM_FORCE_DEPTH_ZERO_TO_ONE', language: 'cpp')
+
 # Gestion des arguments selon le compilateur
 if cpp_compiler.get_id() == 'gcc'
     add_global_arguments('-std=gnu++20', language: 'cpp')
@@ -25,6 +28,7 @@ cpp_sources = [
     
     cpp_dir + 'model.cc',
     cpp_dir + 'text_manager.cc',
+    cpp_dir + 'camera.cpp'
 ]
 
 sources = cpp_sources

@@ -6,7 +6,8 @@
 #include "vulkan_utils.hpp"
 #include "text_manager.hpp"
 
-GltfMaterial::GltfMaterial(const tinygltf::Model& root, tinygltf::Material material, bool hasNormals, TextureManager& textureManager) {
+GltfMaterial::GltfMaterial(const tinygltf::Model &root, tinygltf::Material material, bool hasNormals, TextureManager &textureManager)
+{
     std::copy(material.pbrMetallicRoughness.baseColorFactor.cbegin(), material.pbrMetallicRoughness.baseColorFactor.cbegin() + 3, basecolor);
     metallic_factor = material.pbrMetallicRoughness.metallicFactor;
     roughness_factor = material.pbrMetallicRoughness.roughnessFactor;
@@ -15,43 +16,54 @@ GltfMaterial::GltfMaterial(const tinygltf::Model& root, tinygltf::Material mater
     tinygltf::TextureInfo metallic_roughness_texinfo = material.pbrMetallicRoughness.metallicRoughnessTexture;
 
     features = 0;
-    if (basecolor_texinfo.index >= 0) {
+    if (basecolor_texinfo.index >= 0)
+    {
         features |= 1; // Set bit 0 for base color texture
         baseColorTextureIndex = textureManager.loadTexture(root, basecolor_texinfo.index);
-    } else {
+    }
+    else
+    {
         baseColorTextureIndex = std::nullopt; // No texture
-
-        std::cout << "BaseColor : " << basecolor[0] << ", " << basecolor[1] << ", " << basecolor[2] << std::endl;
     }
 
-    if (metallic_roughness_texinfo.index >= 0) {
+    if (metallic_roughness_texinfo.index >= 0)
+    {
         features |= 2; // Set bit 1 for metallic roughness texture
-        metallicRoughnessTextureIndex = textureManager.loadTexture(root, metallic_roughness_texinfo.index); 
-    } else {
+        metallicRoughnessTextureIndex = textureManager.loadTexture(root, metallic_roughness_texinfo.index);
+    }
+    else
+    {
         metallicRoughnessTextureIndex = std::nullopt; // No texture
     }
 
-    if (hasNormals) {
+    if (hasNormals)
+    {
         features |= 4; // Set bit 2 for normals
     }
 }
 
-void GltfMaterial::bind(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, glm::mat4 modelMatrix) const {
+void GltfMaterial::bind(vk::raii::CommandBuffer &commandBuffer, vk::raii::PipelineLayout &pipelineLayout, glm::mat4 modelMatrix) const
+{
     MeshPushConstants pushConstants;
     pushConstants.modelMatrix = modelMatrix;
     pushConstants.albedoTextureIndex = baseColorTextureIndex.value_or(0); // Default to 0 if no texture
-    
+    pushConstants.rmTextureIndex = metallicRoughnessTextureIndex.value_or(0);
+
     pushConstants.baseColor.x = basecolor[0];
     pushConstants.baseColor.y = basecolor[1];
     pushConstants.baseColor.z = basecolor[2];
     pushConstants.baseColor.w = 1.0f;
-    
+
+    pushConstants.metallicFactor = metallic_factor;
+    pushConstants.roughnessFactor = roughness_factor;
+
     pushConstants.activeAttributes = features;
 
     commandBuffer.pushConstants(pipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MeshPushConstants), &pushConstants);
 }
 
-void GltfPrimitive::draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, vk::raii::Buffer& globalVertexBuffer, glm::mat4 modelMatrix) const {
+void GltfPrimitive::draw(vk::raii::CommandBuffer &commandBuffer, vk::raii::PipelineLayout &pipelineLayout, vk::raii::Buffer &globalVertexBuffer, glm::mat4 modelMatrix) const
+{
     commandBuffer.setVertexInputEXT(vertexBindingDescription, vertexAttributeDescriptions);
 
     commandBuffer.bindVertexBuffers(0, {globalVertexBuffer}, {byteOffset});
@@ -61,61 +73,211 @@ void GltfPrimitive::draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::Pipel
     commandBuffer.drawIndexed(indexCount, 1, firstIndex, 0, 0);
 }
 
-GltfPrimitive::GltfPrimitive(const tinygltf::Model& root, uint32_t primfirstIndex, uint32_t primIndexCount, vk::DeviceSize primByteOffset, tinygltf::Material gltfMaterial, bool hasNormals, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes, TextureManager& textureManager)
+GltfPrimitive::GltfPrimitive(const tinygltf::Model &root, uint32_t primfirstIndex, uint32_t primIndexCount, uint32_t primVertexCount, vk::DeviceSize primByteOffset, tinygltf::Material gltfMaterial, bool hasNormals, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes, TextureManager &textureManager)
 {
     firstIndex = primfirstIndex;
     indexCount = primIndexCount;
     byteOffset = primByteOffset;
+    vertexCount = primVertexCount;
     vertexBindingDescription = binding;
     vertexAttributeDescriptions = attributes;
 
     material = GltfMaterial(root, gltfMaterial, hasNormals, textureManager);
 }
 
-GltfNode::GltfNode(GltfModel& model, tinygltf::Model& root, tinygltf::Node node, glm::mat4 parent_node_transform) {
+void GltfMesh::buildBlas(
+    vk::raii::Device &device,
+    vk::raii::PhysicalDevice &physicalDevice,
+    vk::raii::CommandPool &commandPool,
+    vk::raii::Queue &graphicsQueue,
+    vk::DeviceAddress vertexBufferAddress,
+    vk::DeviceAddress indexBufferAddress)
+{
+    if (primitives.empty())
+        return;
+
+    std::vector<vk::AccelerationStructureGeometryKHR> geometries;
+    geometries.reserve(primitives.size());
+
+    std::vector<uint32_t> maxPrimCounts;
+    maxPrimCounts.reserve(primitives.size());
+
+    std::vector<vk::AccelerationStructureBuildRangeInfoKHR> buildRanges;
+    buildRanges.reserve(primitives.size());
+
+    for (const auto &primitive : primitives)
+    {
+        vk::AccelerationStructureGeometryTrianglesDataKHR triangles{
+            .vertexFormat = vk::Format::eR32G32B32Sfloat,
+            .vertexData = vertexBufferAddress + primitive.getByteOffset(),
+            .vertexStride = primitive.getStride(),
+            .maxVertex = primitive.getVertexCount() - 1,
+            .indexType = vk::IndexType::eUint32,
+            .indexData = indexBufferAddress + (primitive.getFirstIndex() * sizeof(uint32_t)),
+            .transformData = nullptr};
+
+        geometries.push_back(vk::AccelerationStructureGeometryKHR{
+            .geometryType = vk::GeometryTypeKHR::eTriangles,
+            .geometry = triangles,
+            .flags = vk::GeometryFlagBitsKHR::eOpaque});
+
+        uint32_t triangleCount = primitive.getIndexCount() / 3;
+        maxPrimCounts.push_back(triangleCount);
+
+        buildRanges.push_back(vk::AccelerationStructureBuildRangeInfoKHR{
+            .primitiveCount = triangleCount,
+            .primitiveOffset = 0,
+            .firstVertex = 0,
+            .transformOffset = 0});
+    }
+
+    vk::AccelerationStructureBuildGeometryInfoKHR buildInfo{
+        .type = vk::AccelerationStructureTypeKHR::eBottomLevel,
+        .flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace,
+        .mode = vk::BuildAccelerationStructureModeKHR::eBuild,
+        .srcAccelerationStructure = nullptr,
+        .dstAccelerationStructure = nullptr,
+        .geometryCount = static_cast<uint32_t>(geometries.size()),
+        .pGeometries = geometries.data()};
+
+    vk::AccelerationStructureBuildSizesInfoKHR buildSizes = device.getAccelerationStructureBuildSizesKHR(
+        vk::AccelerationStructureBuildTypeKHR::eDevice,
+        buildInfo,
+        maxPrimCounts);
+
+    std::tie(blasBuffer, blasBufferMemory) = VulkanUtils::createBuffer(
+        device,
+        physicalDevice,
+        buildSizes.accelerationStructureSize,
+        vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+        vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    vk::AccelerationStructureCreateInfoKHR createInfo{
+        .buffer = *blasBuffer,
+        .offset = 0,
+        .size = buildSizes.accelerationStructureSize,
+        .type = vk::AccelerationStructureTypeKHR::eBottomLevel};
+    blasHandle = device.createAccelerationStructureKHR(createInfo);
+
+    buildInfo.dstAccelerationStructure = *blasHandle;
+
+    auto [scratchBuffer, scratchMemory] = VulkanUtils::createBuffer(
+        device,
+        physicalDevice,
+        buildSizes.buildScratchSize,
+        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+        vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    vk::BufferDeviceAddressInfo scratchAddressInfo{.buffer = *scratchBuffer};
+    vk::DeviceAddress scratchAddress = device.getBufferAddress(scratchAddressInfo);
+    buildInfo.scratchData.deviceAddress = scratchAddress;
+
+    vk::raii::CommandBuffer cmd = VulkanUtils::beginSingleTimeCommands(device, commandPool);
+
+    const vk::AccelerationStructureBuildRangeInfoKHR *pBuildRangeInfo = buildRanges.data();
+    cmd.buildAccelerationStructuresKHR(buildInfo, pBuildRangeInfo);
+
+    VulkanUtils::endSingleTimeCommands(std::move(cmd), graphicsQueue);
+}
+
+GltfNode::GltfNode(GltfModel &model, tinygltf::Model &root, tinygltf::Node node, glm::mat4 parent_node_transform)
+{
     node_transform = glm::mat4(1.0);
-    if (node.translation.size() == 3) {
+    if (node.translation.size() == 3)
+    {
         glm::vec3 translation(node.translation[0], node.translation[1], node.translation[2]);
 
         node_transform = glm::translate(glm::mat4(1.0), translation);
     }
 
-    if (node.rotation.size() == 4) {
+    if (node.rotation.size() == 4)
+    {
         glm::quat rotation(node.rotation[3], node.rotation[0], node.rotation[1], node.rotation[2]);
         glm::mat4 rotation_mat = glm::mat4_cast(rotation);
 
         node_transform *= rotation_mat;
     }
 
-    if (node.scale.size() == 3) {
+    if (node.scale.size() == 3)
+    {
         glm::vec3 scale(node.scale[0], node.scale[1], node.scale[2]);
 
         node_transform = glm::scale(node_transform, scale);
     }
 
     node_transform = parent_node_transform * node_transform;
-    
-    if (node.mesh >= 0 && static_cast<size_t>(node.mesh) < root.meshes.size()) {
+
+    if (node.mesh >= 0 && static_cast<size_t>(node.mesh) < root.meshes.size())
+    {
         mesh = &(model.meshes[node.mesh]);
-    } else {
+    }
+    else
+    {
         mesh = nullptr;
     }
 
-
-    for (size_t i = 0; i < node.children.size(); i++) {
+    for (size_t i = 0; i < node.children.size(); i++)
+    {
         assert((node.children[i] >= 0) && (static_cast<size_t>(node.children[i]) < root.nodes.size()));
         children.push_back(GltfNode(model, root, root.nodes[node.children[i]], node_transform));
     }
 }
 
+void GltfNode::populateTlasInstances(
+    std::vector<vk::AccelerationStructureInstanceKHR> &instances,
+    std::vector<InstanceData> &instanceData,
+    vk::raii::Device &device,
+    glm::mat4 parentMatrix,
+    uint32_t &customIndexOffset,
+    vk::DeviceAddress vAddr,
+    vk::DeviceAddress iAddr) const
+{
+    glm::mat4 globalTransform = parentMatrix * node_transform;
+    if (mesh)
+    {
+        vk::DeviceAddress blasAddress = mesh->getBlasAddress(device);
+        vk::TransformMatrixKHR tm = VulkanUtils::glmToVkTransformMatrix(globalTransform);
+
+        vk::AccelerationStructureInstanceKHR instance{
+            .transform = tm,
+            .instanceCustomIndex = customIndexOffset,
+            .mask = 0xFF,
+            .instanceShaderBindingTableRecordOffset = 0,
+            .flags = static_cast<VkGeometryInstanceFlagsKHR>(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable),
+            .accelerationStructureReference = blasAddress};
+        instances.push_back(instance);
+
+        for (const auto& prim : mesh->getPrimitives()) {
+            InstanceData data{
+                .vertexBufferAddress = vAddr + prim.getByteOffset(),
+                .indexBufferAddress = iAddr + prim.getFirstIndex() * sizeof(uint32_t),
+                .baseColor = prim.getMaterial().getBaseColor(),
+                .materialID = prim.getMaterial().getMaterialIndex(),
+                .activeAttributes = prim.getMaterial().getActiveAttributes(),
+                .vertexStrideWords = prim.getStride() / 4,
+                .uvOffsetWords = prim.getUvOffset() / 4
+            };
+            instanceData.push_back(data);
+        }
+
+        customIndexOffset += mesh->getPrimitives().size();
+    }
+
+    for (auto &child : children)
+    {
+        child.populateTlasInstances(instances, instanceData, device, globalTransform, customIndexOffset, vAddr, iAddr);
+    }
+}
+
 void GltfModel::createVertexBuffer()
 {
-    if (globalVertexData.empty()) return;
+    if (globalVertexData.empty())
+        return;
     vk::DeviceSize bufferSize = globalVertexData.size();
 
     auto [stagingBuffer, stagingBufferMemory] =
         VulkanUtils::createBuffer(*device, *physicalDevice, bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+                                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
     vk::MemoryRequirements memRequirementsStaging = stagingBuffer.getMemoryRequirements();
 
@@ -124,39 +286,40 @@ void GltfModel::createVertexBuffer()
     stagingBufferMemory.unmapMemory();
 
     std::tie(globalVertexBuffer, globalVertexMemory) =
-        VulkanUtils::createBuffer(*device, *physicalDevice, bufferSize, vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal);
+        VulkanUtils::createBuffer(*device, *physicalDevice, bufferSize, vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+                                  vk::MemoryPropertyFlagBits::eDeviceLocal);
 
     VulkanUtils::copyBuffer(*device, *commandPool, *graphicsQueue, stagingBuffer, globalVertexBuffer, bufferSize);
 }
 
 void GltfModel::createIndexBuffer()
 {
-    if (indices.empty()) return;
+    if (indices.empty())
+        return;
     vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
 
     auto [stagingBuffer, stagingBufferMemory] =
         VulkanUtils::createBuffer(*device, *physicalDevice, bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+                                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
     void *data = stagingBufferMemory.mapMemory(0, bufferSize);
     memcpy(data, indices.data(), (size_t)bufferSize);
     stagingBufferMemory.unmapMemory();
 
     std::tie(globalIndexBuffer, globalIndexMemory) =
-        VulkanUtils::createBuffer(*device, *physicalDevice, bufferSize, vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal);
+        VulkanUtils::createBuffer(*device, *physicalDevice, bufferSize, vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+                                  vk::MemoryPropertyFlagBits::eDeviceLocal);
 
     VulkanUtils::copyBuffer(*device, *commandPool, *graphicsQueue, stagingBuffer, globalIndexBuffer, bufferSize);
 }
 
-GltfModel::GltfModel(const std::string& path, vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice, vk::raii::CommandPool& commandPool, vk::raii::Queue& graphicsQueue, TextureManager& textureManager)
+GltfModel::GltfModel(const std::string &path, vk::raii::Device &device, vk::raii::PhysicalDevice &physicalDevice, vk::raii::CommandPool &commandPool, vk::raii::Queue &graphicsQueue, TextureManager &textureManager)
     : device(&device), physicalDevice(&physicalDevice), commandPool(&commandPool), graphicsQueue(&graphicsQueue)
 {
-    tinygltf::Model    model;
+    tinygltf::Model model;
     tinygltf::TinyGLTF loader;
-    std::string        err;
-    std::string        warn;
+    std::string err;
+    std::string warn;
 
     bool ret = loader.LoadBinaryFromFile(&model, &err, &warn, path);
 
@@ -178,54 +341,58 @@ GltfModel::GltfModel(const std::string& path, vk::raii::Device& device, vk::raii
     // Process all meshes in the model
     for (const auto &mesh : model.meshes)
     {
+        std::vector<vk::AccelerationStructureGeometryKHR> geometries;
+
         meshes.emplace_back();
         for (const auto &primitive : mesh.primitives)
         {
             GltfMesh &gltfMesh = meshes.back();
 
             // Get indices
-            const tinygltf::Accessor   &indexAccessor   = model.accessors[primitive.indices];
+            const tinygltf::Accessor &indexAccessor = model.accessors[primitive.indices];
             const tinygltf::BufferView &indexBufferView = model.bufferViews[indexAccessor.bufferView];
-            const tinygltf::Buffer     &indexBuffer     = model.buffers[indexBufferView.buffer];
+            const tinygltf::Buffer &indexBuffer = model.buffers[indexBufferView.buffer];
 
             // Get vertex positions
-            const tinygltf::Accessor   &posAccessor   = model.accessors[primitive.attributes.at("POSITION")];
+            const tinygltf::Accessor &posAccessor = model.accessors[primitive.attributes.at("POSITION")];
             const tinygltf::BufferView &posBufferView = model.bufferViews[posAccessor.bufferView];
-            const tinygltf::Buffer     &posBuffer     = model.buffers[posBufferView.buffer];
+            const tinygltf::Buffer &posBuffer = model.buffers[posBufferView.buffer];
 
             // Get texture coordinates if available
-            bool                        hasTexCoords       = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
-            const tinygltf::Accessor   *texCoordAccessor   = nullptr;
+            bool hasTexCoords = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
+            const tinygltf::Accessor *texCoordAccessor = nullptr;
             const tinygltf::BufferView *texCoordBufferView = nullptr;
-            const tinygltf::Buffer     *texCoordBuffer     = nullptr;
+            const tinygltf::Buffer *texCoordBuffer = nullptr;
 
             if (hasTexCoords)
             {
-                texCoordAccessor   = &model.accessors[primitive.attributes.at("TEXCOORD_0")];
+                texCoordAccessor = &model.accessors[primitive.attributes.at("TEXCOORD_0")];
                 texCoordBufferView = &model.bufferViews[texCoordAccessor->bufferView];
-                texCoordBuffer     = &model.buffers[texCoordBufferView->buffer];
+                texCoordBuffer = &model.buffers[texCoordBufferView->buffer];
             }
 
             // Get normals if available
-            bool                        hasNormals         = primitive.attributes.find("NORMAL") != primitive.attributes.end();
-            const tinygltf::Accessor   *normalAccessor     = nullptr;
-            const tinygltf::BufferView *normalBufferView   = nullptr;
-            const tinygltf::Buffer     *normalBuffer       = nullptr;
+            bool hasNormals = primitive.attributes.find("NORMAL") != primitive.attributes.end();
+            const tinygltf::Accessor *normalAccessor = nullptr;
+            const tinygltf::BufferView *normalBufferView = nullptr;
+            const tinygltf::Buffer *normalBuffer = nullptr;
 
             if (hasNormals)
             {
-                normalAccessor     = &model.accessors[primitive.attributes.at("NORMAL")];
-                normalBufferView   = &model.bufferViews[normalAccessor->bufferView];
-                normalBuffer       = &model.buffers[normalBufferView->buffer];
+                normalAccessor = &model.accessors[primitive.attributes.at("NORMAL")];
+                normalBufferView = &model.bufferViews[normalAccessor->bufferView];
+                normalBuffer = &model.buffers[normalBufferView->buffer];
             }
 
             size_t posStride = posAccessor.ByteStride(posBufferView) ? posAccessor.ByteStride(posBufferView) : sizeof(float) * 3;
             size_t normalStride = 0;
-            if (hasNormals) {
+            if (hasNormals)
+            {
                 normalStride = normalAccessor->ByteStride(*normalBufferView) ? normalAccessor->ByteStride(*normalBufferView) : sizeof(float) * 3;
             }
             size_t texStride = 0;
-            if (hasTexCoords) {
+            if (hasTexCoords)
+            {
                 texStride = texCoordAccessor->ByteStride(*texCoordBufferView) ? texCoordAccessor->ByteStride(*texCoordBufferView) : sizeof(float) * 2;
             }
 
@@ -233,31 +400,27 @@ GltfModel::GltfModel(const std::string& path, vk::raii::Device& device, vk::raii
             std::vector<vk::VertexInputAttributeDescription2EXT> attributes;
             uint32_t currentOffset = 0;
 
-            attributes.push_back({
-                .location = 0,
-                .binding = 0,
-                .format = vk::Format::eR32G32B32Sfloat,
-                .offset = currentOffset
-            });
+            attributes.push_back({.location = 0,
+                                  .binding = 0,
+                                  .format = vk::Format::eR32G32B32Sfloat,
+                                  .offset = currentOffset});
             currentOffset += sizeof(float) * 3;
 
-            if (hasNormals) {
-                attributes.push_back({
-                    .location = 1,
-                    .binding = 0,
-                    .format = vk::Format::eR32G32B32Sfloat,
-                    .offset = currentOffset
-                });
+            if (hasNormals)
+            {
+                attributes.push_back({.location = 1,
+                                      .binding = 0,
+                                      .format = vk::Format::eR32G32B32Sfloat,
+                                      .offset = currentOffset});
                 currentOffset += sizeof(float) * 3;
             }
 
-            if (hasTexCoords) {
-                attributes.push_back({
-                    .location = 2,
-                    .binding = 0,
-                    .format = vk::Format::eR32G32Sfloat,
-                    .offset = currentOffset
-                });
+            if (hasTexCoords)
+            {
+                attributes.push_back({.location = 2,
+                                      .binding = 0,
+                                      .format = vk::Format::eR32G32Sfloat,
+                                      .offset = currentOffset});
                 currentOffset += sizeof(float) * 2;
             }
 
@@ -265,8 +428,7 @@ GltfModel::GltfModel(const std::string& path, vk::raii::Device& device, vk::raii
                 .binding = 0,
                 .stride = currentOffset,
                 .inputRate = vk::VertexInputRate::eVertex,
-                .divisor = 1
-            };
+                .divisor = 1};
 
             vk::DeviceSize byteOffset = globalVertexData.size();
 
@@ -274,29 +436,31 @@ GltfModel::GltfModel(const std::string& path, vk::raii::Device& device, vk::raii
             {
                 const float *pos = reinterpret_cast<const float *>(&posBuffer.data[posBufferView.byteOffset + posAccessor.byteOffset + i * posStride]);
                 float p[3] = {pos[0], pos[1], pos[2]};
-                unsigned char* pBytes = reinterpret_cast<unsigned char*>(p);
+                unsigned char *pBytes = reinterpret_cast<unsigned char *>(p);
                 globalVertexData.insert(globalVertexData.end(), pBytes, pBytes + sizeof(p));
 
-                if (hasNormals) {
+                if (hasNormals)
+                {
                     const float *normal = reinterpret_cast<const float *>(&normalBuffer->data[normalBufferView->byteOffset + normalAccessor->byteOffset + i * normalStride]);
                     float n[3] = {normal[0], normal[1], normal[2]};
-                    unsigned char* nBytes = reinterpret_cast<unsigned char*>(n);
+                    unsigned char *nBytes = reinterpret_cast<unsigned char *>(n);
                     globalVertexData.insert(globalVertexData.end(), nBytes, nBytes + sizeof(n));
                 }
 
-                if (hasTexCoords) {
+                if (hasTexCoords)
+                {
                     const float *texCoord = reinterpret_cast<const float *>(&texCoordBuffer->data[texCoordBufferView->byteOffset + texCoordAccessor->byteOffset + i * texStride]);
                     float t[2] = {texCoord[0], texCoord[1]};
-                    unsigned char* tBytes = reinterpret_cast<unsigned char*>(t);
+                    unsigned char *tBytes = reinterpret_cast<unsigned char *>(t);
                     globalVertexData.insert(globalVertexData.end(), tBytes, tBytes + sizeof(t));
                 }
             }
 
             uint32_t firstIndex = static_cast<uint32_t>(indices.size());
 
-            const unsigned char *indexData   = &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset];
-            size_t               indexCount  = indexAccessor.count;
-            size_t               indexStride = 0;
+            const unsigned char *indexData = &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset];
+            size_t indexCount = indexAccessor.count;
+            size_t indexStride = 0;
 
             // Determine index stride based on component type
             if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
@@ -342,7 +506,7 @@ GltfModel::GltfModel(const std::string& path, vk::raii::Device& device, vk::raii
             tinygltf::Material material = model.materials[primitive.material];
 
             // Create a GltfPrimitive and add it to the GltfMesh
-            GltfPrimitive gltfPrimitive(model, firstIndex, static_cast<uint32_t>(indexCount), byteOffset, material, hasNormals, binding, attributes, textureManager);
+            GltfPrimitive gltfPrimitive(model, firstIndex, static_cast<uint32_t>(indexCount), posAccessor.count, byteOffset, material, hasNormals, binding, attributes, textureManager);
             gltfMesh.addPrimitive(std::move(gltfPrimitive));
         }
     }
@@ -351,10 +515,21 @@ GltfModel::GltfModel(const std::string& path, vk::raii::Device& device, vk::raii
     createVertexBuffer();
     createIndexBuffer();
 
+    vk::BufferDeviceAddressInfo vertexAddressInfo{.buffer = *globalVertexBuffer};
+    vk::BufferDeviceAddressInfo indexAddressInfo{.buffer = *globalIndexBuffer};
+    vk::DeviceAddress vertexBufferAddress = device.getBufferAddress(vertexAddressInfo);
+    vk::DeviceAddress indexBufferAddress = device.getBufferAddress(indexAddressInfo);
+
+    for (auto &gltfMesh : meshes)
+    {
+        gltfMesh.buildBlas(device, physicalDevice, commandPool, graphicsQueue, vertexBufferAddress, indexBufferAddress);
+    }
+
     // Finally, we can create the root nodes for the scene
     const tinygltf::Scene &scene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
 
-    for (int nodeIndex : scene.nodes) {
+    for (int nodeIndex : scene.nodes)
+    {
         rootNodes.emplace_back(*this, model, model.nodes[nodeIndex], glm::mat4(1.0f));
     }
 }

@@ -16,6 +16,43 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.begin({});
 
+    vk::BufferDeviceAddressInfo instancesAddrInfo{.buffer = *instancesBuffer};
+    vk::DeviceAddress instancesDeviceAddress = device.getBufferAddress(instancesAddrInfo);
+    vk::AccelerationStructureGeometryInstancesDataKHR instancesData{
+        .arrayOfPointers = vk::False,
+        .data = instancesDeviceAddress};
+    vk::AccelerationStructureGeometryKHR geometry{
+        .geometryType = vk::GeometryTypeKHR::eInstances,
+        .geometry = instancesData};
+
+    vk::BufferDeviceAddressInfo scratchAddrInfo{.buffer = *tlasScratchBuffer};
+    vk::DeviceAddress scratchAddress = device.getBufferAddress(scratchAddrInfo);
+
+    vk::AccelerationStructureBuildGeometryInfoKHR buildInfo{
+        .type = vk::AccelerationStructureTypeKHR::eTopLevel,
+        .flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild,
+        .mode = vk::BuildAccelerationStructureModeKHR::eBuild,
+        .dstAccelerationStructure = *tlasHandle,
+        .geometryCount = 1,
+        .pGeometries = &geometry,
+        .scratchData = scratchAddress};
+    vk::AccelerationStructureBuildRangeInfoKHR buildRange{
+        .primitiveCount = blasInstancesCount,
+        .primitiveOffset = 0,
+        .firstVertex = 0,
+        .transformOffset = 0};
+    const vk::AccelerationStructureBuildRangeInfoKHR *pBuildRange = &buildRange;
+    commandBuffer.buildAccelerationStructuresKHR(buildInfo, pBuildRange);
+    // --- SYNCHRONISATION (Pipeline Barrier) ---
+    // On s'assure que la TLAS est entièrement construite avant que le shader ne tente de la lire
+    vk::MemoryBarrier barrier{
+        .srcAccessMask = vk::AccessFlagBits::eAccelerationStructureWriteKHR,
+        .dstAccessMask = vk::AccessFlagBits::eAccelerationStructureReadKHR};
+    commandBuffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
+        vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
+        {}, barrier, nullptr, nullptr);
+
     // Before starting rendering, transition the swapchain image to
     // vk::ImageLayout::eColorAttachmentOptimal
     transition_image_layout(
@@ -88,7 +125,8 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 1, *textureManager.getDescriptorSet(), nullptr);
 
-    for (auto &model : models) {
+    for (auto &model : models)
+    {
         model->draw(commandBuffer, pipelineLayout);
     }
 
@@ -108,27 +146,49 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
     commandBuffer.end();
 }
 
+const double PI = 3.1415926535;
+
 void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 {
-    static auto startTime = std::chrono::high_resolution_clock::now();
-    auto currentTime = std::chrono::high_resolution_clock::now();
-    float time = std::chrono::duration<float>(currentTime - startTime).count();
-
     // Camera and projection matrices (shared by all objects)
-    glm::mat4 view = glm::lookAt(glm::vec3(2.0f, 2.0f, 6.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    glm::mat4 proj = glm::perspective(glm::radians(45.0f),
-                                     static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height),
-                                     0.1f, 20.0f);
+    glm::mat4 view = camera.GetViewMatrix();
+    glm::mat4 proj = glm::perspective(
+        glm::radians(45.0f),
+        static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height),
+        0.1f, 20.0f);
+
     proj[1][1] *= -1; // Flip Y for Vulkan
+
+    float time = glfwGetTime();
 
     CameraUBO ubo{};
     ubo.view = view;
     ubo.proj = proj;
+    ubo.camPos = glm::vec4(camera.Position, 1.f);
+
+    float angleOffset = (2.0f * PI) / 4.0f;
+
+    for (int i = 0; i < 4; i++)
+    {
+        float angle = time + i * angleOffset;
+        glm::vec3 position = glm::vec3(sin(angle) * 2.0f, 3.0f, cos(angle) * 2.0f);
+
+        ubo.lightsPos[i] = glm::vec4(position, 1.f);
+    }
+
     memcpy(cameraUniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }
 
 void VulkanApp::drawFrame()
 {
+    float currentFrame = static_cast<float>(glfwGetTime());
+    deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+
+    // input
+    // -----
+    processInput(window);
+
     // Note: inFlightFences, presentCompleteSemaphores, and commandBuffers are
     // indexed by frameIndex,
     //       while renderFinishedSemaphores is indexed by imageIndex
@@ -154,10 +214,11 @@ void VulkanApp::drawFrame()
         throw std::runtime_error("failed to acquire swap chain image!");
     }
 
+    updateUniformBuffer(frameIndex);
+    updateTlasInstances();
+
     commandBuffers[frameIndex].reset();
     recordCommandBuffer(imageIndex);
-
-    updateUniformBuffer(frameIndex);
 
     vk::PipelineStageFlags waitDestinationStageMask(
         vk::PipelineStageFlagBits::eColorAttachmentOutput);
@@ -201,8 +262,7 @@ void VulkanApp::loadModels()
         physicalDevice,
         commandPool,
         graphicsQueue,
-        textureManager
-    ));
+        textureManager));
 
     models.push_back(std::make_unique<GltfModel>(
         "res/models/plan.glb",
@@ -210,10 +270,9 @@ void VulkanApp::loadModels()
         physicalDevice,
         commandPool,
         graphicsQueue,
-        textureManager
-    ));
+        textureManager));
 
-    models[1]->modelTransform = glm::scale(models[1]->modelTransform, glm::vec3(10.f));
+    models[1]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(10.f));
 }
 
 void VulkanApp::mainLoop()

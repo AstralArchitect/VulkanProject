@@ -8,6 +8,11 @@
 import vulkan_hpp;
 #endif
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
+
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -41,7 +46,14 @@ namespace VulkanUtils {
         vk::raii::Buffer buffer(device, bufferInfo);
 
         vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
+        
+        vk::MemoryAllocateFlagsInfo allocFlagsInfo;
+        if (usage & vk::BufferUsageFlagBits::eShaderDeviceAddress) {
+            allocFlagsInfo.flags = vk::MemoryAllocateFlagBits::eDeviceAddress;
+        }
+
         vk::MemoryAllocateInfo allocInfo{
+            .pNext = (usage & vk::BufferUsageFlagBits::eShaderDeviceAddress) ? &allocFlagsInfo : nullptr,
             .allocationSize = memRequirements.size,
             .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties, physicalDevice)
         };
@@ -241,4 +253,15 @@ namespace VulkanUtils {
 
         commandBuffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, region);
     }
+
+    inline vk::TransformMatrixKHR glmToVkTransformMatrix(const glm::mat4& matrix) {
+        vk::TransformMatrixKHR transform;
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                transform.matrix[r][c] = matrix[c][r]; // Transpose pour le format row-major
+            }
+        }
+        return transform;
+    }
+
 }

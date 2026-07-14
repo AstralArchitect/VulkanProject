@@ -26,6 +26,8 @@ import vulkan_hpp;
 
 #include "text_manager.hpp"
 
+#include "camera.hpp"
+
 // --- Constantes et variables globales ---
 static constexpr uint32_t WIDTH = 800;
 static constexpr uint32_t HEIGHT = 600;
@@ -43,7 +45,12 @@ public:
     void run();
 private:
     std::vector<const char *> requiredDeviceExtension = {
-        vk::KHRSwapchainExtensionName, "VK_EXT_extended_dynamic_state", "VK_EXT_vertex_input_dynamic_state"};
+        vk::KHRSwapchainExtensionName, 
+        "VK_EXT_extended_dynamic_state", 
+        "VK_EXT_vertex_input_dynamic_state",
+        "VK_KHR_acceleration_structure",
+        "VK_KHR_ray_query",
+        "VK_KHR_deferred_host_operations"};
 
     GLFWwindow *window = nullptr;
 
@@ -85,9 +92,16 @@ private:
     vk::raii::DeviceMemory colorImageMemory = nullptr;
     vk::raii::ImageView colorImageView = nullptr;
 
+    Camera camera;
+
+    float deltaTime;
+    float lastFrame;
+
     struct CameraUBO {
-        glm::mat4 view;
-        glm::mat4 proj;
+        alignas(16) glm::mat4 view;
+        alignas(16) glm::mat4 proj;
+        alignas(16) glm::vec4 camPos;        // vec4
+        alignas(16) glm::vec4 lightsPos[4];  // vec4
     };
 
     // Dans la classe VulkanApp :
@@ -104,6 +118,20 @@ private:
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
     std::vector<vk::raii::Fence> inFlightFences;
 
+    vk::raii::Buffer tlasBuffer = nullptr;
+    vk::raii::DeviceMemory tlasBufferMemory = nullptr;
+    vk::raii::Buffer tlasScratchBuffer = nullptr;
+    vk::raii::DeviceMemory tlasScratchBufferMemory = nullptr;
+    vk::raii::AccelerationStructureKHR tlasHandle = nullptr;
+    vk::raii::Buffer instancesBuffer = nullptr;
+    vk::raii::DeviceMemory instancesBufferMemory = nullptr;
+    void* instancesBufferMapped = nullptr;
+    uint32_t blasInstancesCount;
+
+    vk::raii::Buffer instanceDataBuffer = nullptr;
+    vk::raii::DeviceMemory instanceDataBufferMemory = nullptr;
+    void* instanceDataBufferMapped = nullptr;
+
     uint32_t frameIndex = 0;
 
     // Méthodes d'initialisation
@@ -111,6 +139,8 @@ private:
     void initVulkan();
     void mainLoop();
     void cleanup();
+
+    void processInput(GLFWwindow *window);
 
     // Méthodes Vulkan
     void createInstance();
@@ -141,6 +171,9 @@ private:
     void createDepthResources();
 
     void loadModels();
+
+    void createTlas();
+    void updateTlasInstances();
 
     void drawFrame();
     void updateUniformBuffer(uint32_t currentImage);

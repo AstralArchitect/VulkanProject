@@ -16,6 +16,28 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif
 
+#ifdef _WIN32
+#include <windows.h>
+
+void sleep_ms(DWORD milliseconds) {
+    Sleep(milliseconds);
+}
+
+#else
+
+#include <time.h>
+
+void sleep_ms(unsigned long milliseconds) {
+    struct timespec ts;
+
+    ts.tv_sec = milliseconds / 1000;
+    ts.tv_nsec = (milliseconds % 1000) * 1000000;
+
+    nanosleep(&ts, NULL);
+}
+
+#endif
+
 bool isDeviceSuitable(vk::raii::PhysicalDevice const &physicalDevice, std::vector<const char *> const &requiredDeviceExtension);
 std::vector<char> readFile(const std::string &filename);
 
@@ -37,6 +59,50 @@ void VulkanApp::run()
     cleanup();
 }
 
+// process all input: query GLFW whether relevant keys are pressed/released this frame and react accordingly
+// ---------------------------------------------------------------------------------------------------------
+void VulkanApp::processInput(GLFWwindow *window)
+{
+    static bool isFullscreen = false;
+    static int windowedWidth, windowedHeight, windowedPosX, windowedPosY;
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
+    {
+        camera.ProcessKeyboard(LEFT, deltaTime);
+        camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
+    }
+    else if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
+    {
+        camera.ProcessKeyboard(RIGHT, deltaTime);
+        camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
+    }/*
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+    {
+        camera.ProcessKeyboard(FORWARD, deltaTime);
+    }
+    else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+    {
+        camera.ProcessKeyboard(BACKWARD, deltaTime);
+    }*/
+    
+    if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS) {
+        if (!isFullscreen) {
+            glfwGetWindowSize(window, &windowedWidth, &windowedHeight);
+            glfwGetWindowPos(window, &windowedPosX, &windowedPosY);
+
+            const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+            glfwSetWindowMonitor(window, glfwGetPrimaryMonitor(), 0, 0, mode->width, mode->height, mode->refreshRate);
+        } else {
+            glfwSetWindowMonitor(window, NULL, windowedPosX, windowedPosY, windowedWidth, windowedHeight, 0);
+        }
+        isFullscreen = !isFullscreen;
+        sleep_ms(100);
+    }
+    
+}
+
 void VulkanApp::initWindow()
 {
     if (!glfwInit())
@@ -55,6 +121,13 @@ void VulkanApp::initWindow()
     {
         throw std::runtime_error("Échec de la création de la fenêtre GLFW");
     }
+
+    camera = Camera(
+        glm::vec3(2.0f, 2.0f, 6.0f), // Position
+        glm::vec3(0.0f, 1.0f, 0.0f)  // World Up
+    );
+
+    camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
 }
 
 void VulkanApp::initVulkan()
@@ -77,6 +150,7 @@ void VulkanApp::initVulkan()
     createGraphicsPipeline();
 
     loadModels();
+    createTlas();
 
     createUniformBuffers();
     createColorResources();
@@ -230,13 +304,15 @@ void VulkanApp::createLogicalDevice()
     deviceQueueCreateInfo.queueCount = 1;
     deviceQueueCreateInfo.pQueuePriorities = &queuePriority;
 
-        // Create a chain of feature structures
+    // Create a chain of feature structures
     vk::StructureChain<
         vk::PhysicalDeviceFeatures2, 
         vk::PhysicalDeviceVulkan12Features, 
         vk::PhysicalDeviceVulkan13Features,
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, 
-        vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT
+        vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT,
+        vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+        vk::PhysicalDeviceRayQueryFeaturesKHR
     > featureChain = {
         {.features = {
             .samplerAnisotropy = true,
@@ -244,11 +320,14 @@ void VulkanApp::createLogicalDevice()
         }},
         {
             .descriptorBindingPartiallyBound = true,
-            .runtimeDescriptorArray = false
+            .runtimeDescriptorArray = false,
+            .bufferDeviceAddress = true
         },
         {.synchronization2 = true, .dynamicRendering = true},
         {.extendedDynamicState = true},
-        {.vertexInputDynamicState = true}
+        {.vertexInputDynamicState = true},
+        {.accelerationStructure = true},
+        {.rayQuery = true}
     };
 
     vk::DeviceCreateInfo deviceCreateInfo{
@@ -326,9 +405,15 @@ void VulkanApp::createDescriptorSetLayout()
     vk::DescriptorSetLayoutBinding uboLayoutBinding{.binding = 0,
                                                     .descriptorType = vk::DescriptorType::eUniformBuffer,
                                                     .descriptorCount = 1,
-                                                    .stageFlags = vk::ShaderStageFlagBits::eVertex};
+                                                    .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment};
 
-    std::array<vk::DescriptorSetLayoutBinding, 1> bindings = {uboLayoutBinding};
+    std::array global_bindings = {
+        vk::DescriptorSetLayoutBinding( 0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
+        vk::DescriptorSetLayoutBinding( 1, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
+        vk::DescriptorSetLayoutBinding( 2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
+    };
+
+    std::array<vk::DescriptorSetLayoutBinding, global_bindings.size()> bindings = global_bindings;
 
     vk::DescriptorSetLayoutCreateInfo layoutInfo{.bindingCount = static_cast<uint32_t>(bindings.size()), .pBindings = bindings.data()};
     descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
@@ -366,7 +451,7 @@ void VulkanApp::createGraphicsPipeline()
         .depthClampEnable = vk::False,
         .rasterizerDiscardEnable = vk::False,
         .polygonMode = vk::PolygonMode::eFill,
-        .cullMode = vk::CullModeFlagBits::eBack,
+        .cullMode = vk::CullModeFlagBits::eNone,
         .frontFace = vk::FrontFace::eCounterClockwise,
         .depthBiasEnable = vk::False,
         .lineWidth = 1.0f};
@@ -552,6 +637,96 @@ void VulkanApp::createSyncObjects()
     }
 }
 
+void VulkanApp::createTlas()
+{
+    uint32_t maxInstances = 0;
+    uint32_t maxPrimitives = 0;
+    for (const auto& model : models) {
+        maxInstances += model->getMeshInstanceCount(); 
+        maxPrimitives += model->getPrimitiveInstanceCount();
+    }
+    if (maxInstances == 0) return;
+
+    vk::DeviceSize bufferSize = sizeof(vk::AccelerationStructureInstanceKHR) * maxInstances;
+    
+    std::tie(instancesBuffer, instancesBufferMemory) = VulkanUtils::createBuffer(
+        device, physicalDevice, bufferSize,
+        vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+    );
+
+    vk::DeviceSize instanceDataBufferSize = sizeof(InstanceData) * maxPrimitives;
+    std::tie(instanceDataBuffer, instanceDataBufferMemory) = VulkanUtils::createBuffer(
+        device, physicalDevice, instanceDataBufferSize,
+        vk::BufferUsageFlagBits::eStorageBuffer,
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+    );
+    instanceDataBufferMapped = instanceDataBufferMemory.mapMemory(0, instanceDataBufferSize);
+
+    instancesBufferMapped = instancesBufferMemory.mapMemory(0, bufferSize);
+    vk::BufferDeviceAddressInfo instancesAddrInfo{ .buffer = *instancesBuffer };
+    vk::DeviceAddress instancesDeviceAddress = device.getBufferAddress(instancesAddrInfo);
+    vk::AccelerationStructureGeometryInstancesDataKHR instancesData{
+        .arrayOfPointers = vk::False,
+        .data = instancesDeviceAddress
+    };
+    vk::AccelerationStructureGeometryKHR geometry{
+        .geometryType = vk::GeometryTypeKHR::eInstances,
+        .geometry = instancesData
+    };
+    vk::AccelerationStructureBuildGeometryInfoKHR buildInfo{
+        .type = vk::AccelerationStructureTypeKHR::eTopLevel,
+        .flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild, // Rapidité de build privilégiée car reconstruite chaque frame
+        .mode = vk::BuildAccelerationStructureModeKHR::eBuild,
+        .geometryCount = 1,
+        .pGeometries = &geometry
+    };
+    vk::AccelerationStructureBuildSizesInfoKHR buildSizes = device.getAccelerationStructureBuildSizesKHR(
+        vk::AccelerationStructureBuildTypeKHR::eDevice,
+        buildInfo,
+        maxInstances
+    );
+    std::tie(tlasBuffer, tlasBufferMemory) = VulkanUtils::createBuffer(
+        device, physicalDevice, buildSizes.accelerationStructureSize,
+        vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+        vk::MemoryPropertyFlagBits::eDeviceLocal
+    );
+
+    vk::AccelerationStructureCreateInfoKHR createInfo{
+        .buffer = *tlasBuffer,
+        .offset = 0,
+        .size = buildSizes.accelerationStructureSize,
+        .type = vk::AccelerationStructureTypeKHR::eTopLevel
+    };
+    tlasHandle = device.createAccelerationStructureKHR(createInfo);
+
+    std::tie(tlasScratchBuffer, tlasScratchBufferMemory) = VulkanUtils::createBuffer(
+        device, physicalDevice, buildSizes.buildScratchSize,
+        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+        vk::MemoryPropertyFlagBits::eDeviceLocal
+    );
+}
+
+void VulkanApp::updateTlasInstances()
+{
+    std::vector<vk::AccelerationStructureInstanceKHR> instances;
+    std::vector<InstanceData> instanceData;
+    
+    uint32_t customIndexOffset = 0;
+    for (const auto &model : models) {
+        model->populateTlasInstances(instances, instanceData, device, customIndexOffset);
+    }
+
+    blasInstancesCount = instances.size();
+
+    if (instances.empty()) return;
+
+    std::memcpy(instancesBufferMapped, instances.data(), sizeof(vk::AccelerationStructureInstanceKHR) * instances.size());
+    if (!instanceData.empty()) {
+        std::memcpy(instanceDataBufferMapped, instanceData.data(), sizeof(InstanceData) * instanceData.size());
+    }
+}
+
 void VulkanApp::createUniformBuffers()
 {
     // On nettoie les anciens buffers globaux s'ils existent (utile lors du redimensionnement de la fenêtre)
@@ -590,9 +765,11 @@ void VulkanApp::createDepthResources()
 
 void VulkanApp::createDescriptorPool()
 {
-    // We need MAX_FRAMES_IN_FLIGHT descriptor sets
+    // We need MAX_FRAMES_IN_FLIGHT descriptor sets for both the camera UBO and the TLAS
     std::array poolSize{
-        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT)};
+        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
+        vk::DescriptorPoolSize(vk::DescriptorType::eAccelerationStructureKHR, MAX_FRAMES_IN_FLIGHT),
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT)};
     vk::DescriptorPoolCreateInfo poolInfo{
         .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
         .maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
@@ -616,12 +793,23 @@ void VulkanApp::createDescriptorSets()
     // On met à jour les Descripteurs
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-
         // Binding 0 : La Caméra
         vk::DescriptorBufferInfo bufferInfo{
             .buffer = *cameraUniformBuffers[i],
             .offset = 0,
             .range = sizeof(CameraUBO)};
+
+        // Binding 1 : La TLAS (Acceleration Structure)
+        vk::AccelerationStructureKHR rawTlas = *tlasHandle;
+        vk::WriteDescriptorSetAccelerationStructureKHR asInfo{
+            .accelerationStructureCount = 1,
+            .pAccelerationStructures = &rawTlas
+        };
+
+        vk::DescriptorBufferInfo instanceDataInfo{
+            .buffer = *instanceDataBuffer,
+            .offset = 0,
+            .range = VK_WHOLE_SIZE};
 
         std::array descriptorWrites{
             vk::WriteDescriptorSet{
@@ -630,7 +818,22 @@ void VulkanApp::createDescriptorSets()
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
                 .descriptorType = vk::DescriptorType::eUniformBuffer,
-                .pBufferInfo = &bufferInfo}};
+                .pBufferInfo = &bufferInfo},
+            vk::WriteDescriptorSet{
+                .pNext = &asInfo,
+                .dstSet = *cameraDescriptorSets[i],
+                .dstBinding = 1, // Binding 1 pour la TLAS
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eAccelerationStructureKHR},
+            vk::WriteDescriptorSet{
+                .dstSet = *cameraDescriptorSets[i],
+                .dstBinding = 2, // Binding 2 pour les Instance Data
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eStorageBuffer,
+                .pBufferInfo = &instanceDataInfo}
+        };
 
         device.updateDescriptorSets(descriptorWrites, {});
     }
