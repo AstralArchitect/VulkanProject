@@ -52,7 +52,7 @@ class TextureManager {
 
         void createFallbackTexture();
 
-        void createTextureImage(const tinygltf::Model& model, int textureIndex, Texture& texture);
+        void createTextureImage(const tinygltf::Model& model, int textureIndex, Texture& texture, vk::Format format);
         void createTextureSampler();
 
         void createDescriptorSetLayout();

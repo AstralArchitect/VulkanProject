@@ -222,16 +222,10 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     ubo.view = view;
     ubo.proj = proj;
     ubo.camPos = glm::vec4(camera.Position, 1.f);
+    ubo.time = time;
 
-    float angleOffset = (2.0f * PI) / 4.0f;
-
-    for (int i = 0; i < 4; i++)
-    {
-        float angle = time + i * angleOffset;
-        glm::vec3 position = glm::vec3(sin(angle) * 2.0f, 3.0f, cos(angle) * 2.0f);
-
-        ubo.lightsPos[i] = glm::vec4(position, 1.f);
-    }
+    ubo.lightsPos[0] = glm::vec4(1.5f, 2.f, 0.f, 1.f);
+    ubo.lightsPos[1] = glm::vec4(-3.f, 2.f, 1.f, 1.f);
 
     // Placement des aiguilles
     models[3]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.075f));
@@ -260,8 +254,8 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
         hours = 12; // Convert 0 to 12 for midnight/noon
     }
     // convert the actual time into degrees
-    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(minutes * 6.f), glm::vec3(0.0, -1.0, 0.0));
-    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(hours * 30.f), glm::vec3(0.0, -1.0, 0.0));
+    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(minutes * 6.f), glm::vec3(0.0, -1.0, 0.0));
+    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(hours * 30.f), glm::vec3(0.0, -1.0, 0.0));
 
     memcpy(cameraUniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }
@@ -391,6 +385,16 @@ void VulkanApp::loadModels()
         commandPool,
         graphicsQueue,
         textureManager));
+
+    models.push_back(std::make_unique<GltfModel>(
+        "res/models/lampe.glb",
+        device,
+        physicalDevice,
+        commandPool,
+        graphicsQueue,
+        textureManager));
+
+    models[5]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.5f)) * glm::translate(glm::mat4(1.f), glm::vec3(3.f, 0.f, 0.f));
 }
 
 void VulkanApp::mainLoop()

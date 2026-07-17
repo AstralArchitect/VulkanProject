@@ -42,6 +42,8 @@ private:
     double basecolor[3];
     double metallic_factor;
     double roughness_factor;
+    double transmission_factor;
+    double emissive_factor[3];
 
     std::optional<uint32_t> baseColorTextureIndex;
     std::optional<uint32_t> metallicRoughnessTextureIndex;
@@ -49,6 +51,10 @@ private:
 public:
     uint32_t getMaterialIndex() const { return baseColorTextureIndex.value_or(0); }
     glm::vec4 getBaseColor() const { return glm::vec4(basecolor[0], basecolor[1], basecolor[2], 1.0f); }
+    float getMetallic() const { return metallic_factor; }
+    float getRoughness() const { return roughness_factor; }
+    float getTransmission() const { return transmission_factor; }
+    glm::vec3 getEmissive() const { return glm::vec3(emissive_factor[0], emissive_factor[1], emissive_factor[2]); }
     uint32_t getActiveAttributes() const { return features; }
 };
 

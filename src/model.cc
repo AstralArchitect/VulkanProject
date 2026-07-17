@@ -12,6 +12,25 @@ GltfMaterial::GltfMaterial(const tinygltf::Model &root, tinygltf::Material mater
     metallic_factor = material.pbrMetallicRoughness.metallicFactor;
     roughness_factor = material.pbrMetallicRoughness.roughnessFactor;
 
+    if (material.emissiveFactor.size() == 3) {
+        std::copy(material.emissiveFactor.cbegin(), material.emissiveFactor.cend(), emissive_factor);
+    } else {
+        emissive_factor[0] = emissive_factor[1] = emissive_factor[2] = 0.0;
+    }
+
+    transmission_factor = 0.0;
+
+    auto extIt = material.extensions.find("KHR_materials_transmission");
+    if (extIt != material.extensions.end()) 
+    {
+        const tinygltf::Value& extValue = extIt->second;
+
+        if (extValue.Has("transmissionFactor")) 
+        {
+            transmission_factor = extValue.Get("transmissionFactor").Get<double>();
+        }
+    }
+
     tinygltf::TextureInfo basecolor_texinfo = material.pbrMetallicRoughness.baseColorTexture;
     tinygltf::TextureInfo metallic_roughness_texinfo = material.pbrMetallicRoughness.metallicRoughnessTexture;
 
@@ -59,6 +78,9 @@ void GltfMaterial::bind(vk::raii::CommandBuffer &commandBuffer, vk::raii::Pipeli
 
     pushConstants.metallicFactor = metallic_factor;
     pushConstants.roughnessFactor = roughness_factor;
+    pushConstants.transmissionFactor = transmission_factor;
+
+    pushConstants.emissiveColor = glm::vec4(getEmissive(), 0.0f);
 
     pushConstants.activeAttributes = features;
 
@@ -255,10 +277,15 @@ void GltfNode::populateTlasInstances(
                 .vertexBufferAddress = vAddr + prim.getByteOffset(),
                 .indexBufferAddress = iAddr + prim.getFirstIndex() * sizeof(uint32_t),
                 .baseColor = prim.getMaterial().getBaseColor(),
+                .emissiveColor = glm::vec4(prim.getMaterial().getEmissive(), 1.0f),
+                .metallic = prim.getMaterial().getMetallic(),
+                .roughness = prim.getMaterial().getRoughness(),
+                .transmission = prim.getMaterial().getTransmission(),
                 .materialID = prim.getMaterial().getMaterialIndex(),
                 .activeAttributes = prim.getMaterial().getActiveAttributes(),
                 .vertexStrideWords = prim.getStride() / 4,
-                .uvOffsetWords = prim.getUvOffset() / 4
+                .uvOffsetWords = prim.getUvOffset() / 4,
+                .normalOffsetWords = prim.getNormalOffset() / 4 
             };
             instanceData.push_back(data);
         }

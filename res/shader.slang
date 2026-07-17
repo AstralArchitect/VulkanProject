@@ -15,17 +15,40 @@ struct CameraUBO {
     float4x4 view;
     float4x4 proj;
     float4 camPos;
-    float4 lightsPos[4];
+    float4 lightsPos[2];
+    float time;
 };
+
+struct InstanceData {
+    float *vertexBuffer;
+    uint *indexBuffer;
+    float4 baseColor;
+    float4 emissiveColor;
+    float metallic;
+    float roughness;
+    float transmission;
+    uint materialID;
+    uint activeAttributes;
+    uint vertexStrideWords;
+    uint uvOffsetWords;
+    uint normalOffsetWords;
+};
+
+[vk::binding(1, 1)] Sampler2D globalTextures[100];
+
 [vk::binding(0, 0)] ConstantBuffer<CameraUBO> camera;
+[vk::binding(1, 0)] RaytracingAccelerationStructure accelerationStructure;
+[vk::binding(2, 0)] StructuredBuffer<InstanceData> instanceDataBuffer;
 
 struct ModelPushConstants {
     float4x4 model;
     uint albedoTextureIndex;
     uint rmTextureIndex;
     float4 baseColor;
+    float4 emissiveColor;
     float metallicFactor;
     float roughnessFactor;
+    float transmissionFactor;
     uint activeAttributes;
 };
 
@@ -52,22 +75,7 @@ static const float linear = 0.09f;
 static const float quadratic = 0.032f;
 static const float PI = 3.14159265359;
 static const float EPSILON = 0.001f;
-static const float NUM_SAMPLES = 16;
-
-[vk::binding(1, 1)] Sampler2D globalTextures[100];
-[vk::binding(1, 0)] RaytracingAccelerationStructure accelerationStructure;
-
-struct InstanceData {
-    float *vertexBuffer;
-    uint *indexBuffer;
-    float4 baseColor;
-    uint materialID;
-    uint activeAttributes;
-    uint vertexStrideWords;
-    uint uvOffsetWords;
-};
-
-[vk::binding(2, 0)] StructuredBuffer<InstanceData> instanceDataBuffer;
+static const float NUM_SAMPLES = 4;
 
 float calculateAttenuation(float3 pos1, float3 pos2) {
     float distance = length(pos2 - pos1);
@@ -110,29 +118,57 @@ float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
     return ggx1 * ggx2;
 }
 
-bool in_shadow(float3 P, float3 lightDir, float3 lightPos)
+float3 shadow_intensity(float3 P, float3 lightDir, float3 lightPos)
 {
-    // Build the shadow ray from the world position toward the light
-    RayDesc shadowRayDesc;
-    shadowRayDesc.Origin = P;
-    shadowRayDesc.Direction = normalize(lightDir);
-    shadowRayDesc.TMin = EPSILON;
-    shadowRayDesc.TMax = distance(lightPos, P);
+    float3 lightTransmissionColor = float3(1.0);
+    float3 currentOrigin = P;
+    float maxDist = distance(lightPos, P);
+    float3 dir = normalize(lightDir);
 
-    // Initialize a ray query for shadows
-    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES |
-             RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
-    let rayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES |
-                   RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+    for (int depth = 0; depth < 8; ++depth)
+    {
+        RayDesc shadowRayDesc;
+        shadowRayDesc.Origin = currentOrigin;
+        shadowRayDesc.Direction = dir;
+        shadowRayDesc.TMin = EPSILON;
+        shadowRayDesc.TMax = maxDist;
 
-    sq.TraceRayInline(accelerationStructure, rayFlags, 0xFF, shadowRayDesc);
+        RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> sq;
+        let rayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
 
-    sq.Proceed();
+        sq.TraceRayInline(accelerationStructure, rayFlags, 0xFF, shadowRayDesc);
 
-    // If the shadow ray intersects an opaque triangle, we consider the pixel in shadow
-    bool hit = (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT);
+        while (sq.Proceed()) {}
 
-    return hit;
+        if (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+        {
+            uint instanceID = sq.CommittedRayInstanceCustomIndex() + sq.CommittedGeometryIndex();
+            InstanceData inst = instanceDataBuffer[instanceID];
+
+            lightTransmissionColor *= inst.transmission;
+
+            if (all(lightTransmissionColor < 0.001))
+            {
+                lightTransmissionColor = float3(0.0);
+                break;
+            }
+
+            float hitT = sq.CommittedRayT();
+            currentOrigin = currentOrigin + dir * (hitT + EPSILON);
+            maxDist -= (hitT + EPSILON);
+
+            if (maxDist <= EPSILON)
+            {
+                break;
+            }
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    return 1.0 - lightTransmissionColor;
 }
 
 float2 intersection_uv(uint instanceID, uint primIndex, float2 barycentric) {
@@ -152,6 +188,29 @@ float2 intersection_uv(uint instanceID, uint primIndex, float2 barycentric) {
 
     float3 bary = float3(1.0 - barycentric.x - barycentric.y, barycentric.x, barycentric.y);
     return uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+}
+
+float3 intersection_normal(uint instanceID, uint primIndex, float2 barycentric) {
+    InstanceData inst = instanceDataBuffer[instanceID];
+
+    // Les indices des 3 sommets du triangle
+    uint i0 = inst.indexBuffer[primIndex * 3 + 0];
+    uint i1 = inst.indexBuffer[primIndex * 3 + 1];
+    uint i2 = inst.indexBuffer[primIndex * 3 + 2];
+
+    // Calcule des positions mémoire de base pour la normale de chaque sommet
+    uint base0 = i0 * inst.vertexStrideWords + inst.normalOffsetWords;
+    uint base1 = i1 * inst.vertexStrideWords + inst.normalOffsetWords;
+    uint base2 = i2 * inst.vertexStrideWords + inst.normalOffsetWords;
+
+    // Lecture des composantes X, Y, Z pour chaque normale
+    float3 n0 = float3(inst.vertexBuffer[base0], inst.vertexBuffer[base0 + 1], inst.vertexBuffer[base0 + 2]);
+    float3 n1 = float3(inst.vertexBuffer[base1], inst.vertexBuffer[base1 + 1], inst.vertexBuffer[base1 + 2]);
+    float3 n2 = float3(inst.vertexBuffer[base2], inst.vertexBuffer[base2 + 1], inst.vertexBuffer[base2 + 2]);
+
+    // Interpolation à l'aide des coordonnées barycentriques
+    float3 bary = float3(1.0 - barycentric.x - barycentric.y, barycentric.x, barycentric.y);
+    return normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
 }
 
 uint pcg_hash(uint seed) {
@@ -195,6 +254,48 @@ float3 orient_to_world(float3 H_local, float3 N, float3 T, float3 B) {
     return H_local.x * T + H_local.y * B + H_local.z * N;
 }
 
+float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float roughnessFactor, float transmission, float3 emission) {
+    float3 V = normalize(camera.camPos.xyz - P);
+
+    float3 Lo = float3(0.0);
+    for (int i = 0; i < 1; ++i)
+    {
+        float3 L = normalize(camera.lightsPos[i].xyz - P);
+        float3 H = normalize(V + L);
+
+        float3 shadowColor = shadow_intensity(P, L, camera.lightsPos[i].xyz);
+        if (all(shadowColor >= 0.999)) continue;
+
+        float attenuation = calculateAttenuation(P, camera.lightsPos[i].xyz);
+        float3 lightColor = float3(23.47, 21.31, 20.79);
+        float3 radiance = lightColor * attenuation * (1.0 - shadowColor);
+
+        float3 F0 = float3(0.04);
+        F0 = lerp(F0, albedoFactor, metallicFactor);
+        float3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+        float NDF = DistributionGGX(N, H, roughnessFactor);
+        float G = GeometrySmith(N, V, L, roughnessFactor);
+
+        float3 numerator = NDF * G * F;
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
+        float3 specular = numerator / max(denominator, 0.001);
+
+        float3 kS = F;
+        float3 kD = float3(1.0) - kS;
+        kD *= 1.0 - metallicFactor;
+
+        float NdotL = max(dot(N, L), 0.0);
+
+        float backNdotL = max(dot(-N, L), 0.0);
+        float3 translucency = backNdotL * transmission * albedoFactor;
+
+        Lo += ((kD * albedoFactor / PI) * NdotL + specular * NdotL + translucency) * radiance;
+    }
+    float3 ambient = float3(0.03) * albedoFactor;
+
+    return ambient + Lo + emission;
+}
 
 float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor, float roughnessFactor, inout uint seed) {
     float3 V = normalize(camera.camPos.xyz - P);
@@ -206,7 +307,9 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
     float3 Bitangent;
     getTangentSpace(N, Tangent, Bitangent);
 
-    for (int i = 0; i < NUM_SAMPLES; ++i) {
+    const int num_samples = (roughnessFactor < .1f) ? 1 : NUM_SAMPLES;
+
+    for (int i = 0; i < num_samples; ++i) {
         float2 Xi = float2(next_rand(seed), next_rand(seed));
         float3 H_local = ImportanceSampleGGX(Xi, max(roughnessFactor, 0.01)); 
         float3 H = orient_to_world(H_local, N, Tangent, Bitangent);
@@ -229,7 +332,7 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
         float3 sampleColor = float3(0.0);
 
         if (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-            uint instanceID = rq.CommittedRayInstanceCustomIndex();
+            uint instanceID = rq.CommittedRayInstanceCustomIndex() + rq.CommittedGeometryIndex();
             uint primIndex = rq.CommittedPrimitiveIndex();
             float2 bary = rq.CommittedTriangleBarycentrics();
 
@@ -246,19 +349,14 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
                 intersectionColor = inst.baseColor;
             }
 
-            int visibleLights = 4;
-            for (int i = 0; i < 4; i++) {
-                float3 lightDir = normalize(camera.lightsPos[i].xyz - hitPosition);
-                if (in_shadow(hitPosition, lightDir, camera.lightsPos[i].xyz)) {
-                    visibleLights--;
-                }
+            if ((inst.activeAttributes & 4u) != 0u) {
+                float3 normal = intersection_normal(instanceID, primIndex, bary);
+                intersectionColor.rgb = pbr(hitPosition, normal, intersectionColor.xyz, inst.metallic, inst.roughness, inst.transmission, inst.emissiveColor.rgb);
             }
-
-            intersectionColor = (intersectionColor / 5 * visibleLights) + (intersectionColor / 5);
 
             sampleColor = intersectionColor.rgb;
         } else {
-            sampleColor = float3(0.f);
+            sampleColor = float3(.0f);
         }
 
         // Fresnel calculation on the microfacet
@@ -290,7 +388,7 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
 
     float4 color;
     float3 P = vertIn.fragPos;
-    uint seed = init_rand(vertIn.pos.x, vertIn.pos.y);
+    uint seed = init_rand(vertIn.pos.x + (camera.time * 100), vertIn.pos.y + (camera.time * 100));
 
     if ((push.activeAttributes & 4u) != 0u) {
         float3 albedoFactor;
@@ -314,48 +412,8 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
         }
 
         float3 N = normalize(vertIn.fragNormal);
-        float3 V = normalize(camera.camPos.xyz - vertIn.fragPos);
-        
-        // Correction automatique des normales inversées (Double-sided)
-        if (dot(N, V) < 0.0) {
-            N = -N;
-        }
 
-        float3 Lo = float3(0.0);
-        for (int i = 0; i < 4; ++i)
-        {
-            float3 L = normalize(camera.lightsPos[i].xyz - vertIn.fragPos);
-            float3 H = normalize(V + L);
-
-            // First, test if the object is in shadow or not. If not, we don't add this light's contribution
-            bool inShadow = in_shadow(P, L, camera.lightsPos[i].xyz);
-
-            if (inShadow) continue;
-
-            float attenuation = calculateAttenuation(vertIn.fragPos, camera.lightsPos[i].xzy);
-            float3 lightColor = float3(23.47, 21.31, 20.79);
-            float3 radiance = lightColor * attenuation;
-
-            float3 F0 = float3(0.04);
-            F0 = lerp(F0, albedoFactor, metallicFactor);
-            float3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-
-            float NDF = DistributionGGX(N, H, roughnessFactor);
-            float G = GeometrySmith(N, V, L, roughnessFactor);
-
-            float3 numerator = NDF * G * F;
-            float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
-            float3 specular = numerator / max(denominator, 0.001);
-
-            float3 kS = F;
-            float3 kD = float3(1.0) - kS;
-            kD *= 1.0 - metallicFactor;
-
-            float NdotL = max(dot(N, L), 0.0);
-            Lo += (kD * albedoFactor / PI + specular) * radiance * NdotL;
-        }
-        float3 ambient = float3(0.03) * albedoFactor;
-        color = float4(ambient + Lo, 1.f);
+        color = float4(pbr(P, N, albedoFactor, metallicFactor, roughnessFactor, push.transmissionFactor, push.emissiveColor.rgb), 1.f);
 
         float4 reflectionColor = apply_reflection(P, N, albedoFactor, metallicFactor, roughnessFactor, seed);
 

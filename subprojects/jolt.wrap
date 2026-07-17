@@ -1,0 +1,5 @@
+[wrap-git]
+url = https://github.com/jrouwe/JoltPhysics.git
+revision = v5.0.0
+depth = 1
+patch_directory = jolt-patch

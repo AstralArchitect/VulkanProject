@@ -10,3 +10,4 @@ res/blender_models/*.blend1
 .cache/
 *.blend
 *.blend1
+jolt

@@ -112,7 +112,8 @@ private:
         alignas(16) glm::mat4 view;
         alignas(16) glm::mat4 proj;
         alignas(16) glm::vec4 camPos;        // vec4
-        alignas(16) glm::vec4 lightsPos[4];  // vec4
+        alignas(16) glm::vec4 lightsPos[2];  // vec4
+        alignas(16) float time;
     };
 
     std::vector<vk::raii::Buffer> cameraUniformBuffers;

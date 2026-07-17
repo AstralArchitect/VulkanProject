@@ -8,17 +8,14 @@ project(
 
 cpp_compiler = meson.get_compiler('cpp')
 
-# Arguments globaux du projet (indispensables pour Vulkan/GLM)
 add_project_arguments('-DGLM_FORCE_DEFAULT_ALIGNED_GENTYPES', '-DGLM_FORCE_DEPTH_ZERO_TO_ONE', language: 'cpp')
 
-# Gestion des arguments selon le compilateur
 if cpp_compiler.get_id() == 'gcc'
     add_global_arguments('-std=gnu++20', language: 'cpp')
 elif cpp_compiler.get_id() == 'msvc'
     add_global_arguments('/W2', language: 'cpp')
 endif
 
-# --- Chemins des sources ---
 cpp_dir = 'src/'
 
 cpp_sources = [
@@ -32,14 +29,8 @@ cpp_sources = [
 ]
 
 sources = cpp_sources
-
-# --- Gestion des Dépendances ---
-
-# 1. Vulkan : Meson le trouve automatiquement via la variable VULKAN_SDK
 vulkan_dep = dependency('vulkan')
 
-# 2. GLFW & GLM : Puisque tu gères les fichiers manuellement, 
-# Meson les trouvera s'ils sont dans ton PATH ou si tu utilises des Wraps.
 glfw_dep = dependency('glfw3')
 glm_dep = dependency('glm')
 
@@ -54,38 +45,49 @@ opt_var.add_cmake_defines({
 tinygltf = cmake.subproject('tinygltf', options: opt_var)
 tinygltf_dep = tinygltf.dependency('tinygltf')
 
-# --- Inclusion des dossiers de headers ---
+jolt_options = cmake.subproject_options()
+
+jolt_options.add_cmake_defines({
+    'TARGET_UNIT_TESTS': 'OFF',
+    'TARGET_HELLO_WORLD': 'OFF',
+    'TARGET_PERFORMANCE_TEST': 'OFF',
+    'TARGET_SAMPLES': 'OFF',
+    'TARGET_VIEWER': 'OFF',
+    'USE_STATIC_MSVC_RUNTIME_LIBRARY': 'OFF',
+    # 'USE_DOUBLE_PRECISION': 'ON'
+})
+
+jolt_subproj = cmake.subproject('jolt', options: jolt_options)
+
+jolt_dep = jolt_subproj.dependency('Jolt')
+
 include_dir = include_directories('Include')
 
-# --- Exécutable final ---
 executable(
     'main',
     sources: sources,
     include_directories: include_dir,
-    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinygltf_dep],
+    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinygltf_dep, jolt_dep],
 )
 
-# --- Compiler les shaders ---
-# 1. Trouver l'exécutable slangc sur le système
 slangc = find_program('slangc', required: true)
 
-# 2. Créer une cible personnalisée pour compiler le shader
 custom_target(
     'compile_slang_shader',
     input: 'res/shader.slang',
     output: 'shader.spv',
     command: [
         slangc,
-        '@INPUT@', # Le fichier source (res/shader.slang)
-        '-target', 'spirv', # On spécifie qu'on veut du SPIR-V pour Vulkan
+        '@INPUT@',
+        '-target', 'spirv',
         '-profile', 'spirv_1_4',
         '-emit-spirv-directly',
         '-fvk-use-entrypoint-name',
         '-entry', 'vertMain',
         '-entry', 'fragMain',
-        '-o', '@OUTPUT@', # Le fichier de destination généré par Meson
+        '-o', '@OUTPUT@',
     ],
-    build_by_default: true, # Force la compilation même si l'exécutable C++ n'en dépend pas directement
+    build_by_default: true,
 )
 
 custom_target(
@@ -94,13 +96,13 @@ custom_target(
     output: 'composition.spv',
     command: [
         slangc,
-        '@INPUT@', # Le fichier source (res/shader.slang)
-        '-target', 'spirv', # On spécifie qu'on veut du SPIR-V pour Vulkan
+        '@INPUT@',
+        '-target', 'spirv',
         '-profile', 'spirv_1_4',
         '-emit-spirv-directly',
         '-fvk-use-entrypoint-name',
         '-entry', 'main',
-        '-o', '@OUTPUT@', # Le fichier de destination généré par Meson
+        '-o', '@OUTPUT@',
     ],
-    build_by_default: true, # Force la compilation même si l'exécutable C++ n'en dépend pas directement
+    build_by_default: true,
 )

@@ -95,8 +95,8 @@ uint32_t TextureManager::loadTexture(const tinygltf::Model& model, int textureIn
         .imageView = nullptr,
         .mipLevels = 0
     };
-    createTextureImage(model, textureIndex, texture);
     vk::Format format = isSRGB ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm;
+    createTextureImage(model, textureIndex, texture, format);
     texture.imageView = VulkanUtils::createImageView(*device, *texture.image, format, vk::ImageAspectFlagBits::eColor, texture.mipLevels);
 
     uint32_t newIndex = static_cast<uint32_t>(textures.size());
@@ -189,7 +189,7 @@ void TextureManager::generateMipmaps(
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
 }
 
-void TextureManager::createTextureImage(const tinygltf::Model& model, int textureIndex, Texture& texture) {
+void TextureManager::createTextureImage(const tinygltf::Model& model, int textureIndex, Texture& texture, vk::Format format) {
     const tinygltf::Texture& gltfTexture = model.textures[textureIndex];
     const tinygltf::Image& image = model.images[gltfTexture.source];
 
@@ -229,7 +229,7 @@ void TextureManager::createTextureImage(const tinygltf::Model& model, int textur
     texture.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
     std::tie(texture.image, texture.imageMemory) =
-        VulkanUtils::createImage(*device, *physicalDevice, texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+        VulkanUtils::createImage(*device, *physicalDevice, texWidth, texHeight, format, vk::ImageTiling::eOptimal,
                                  vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
                                  vk::MemoryPropertyFlagBits::eDeviceLocal, vk::SampleCountFlagBits::e1, texture.mipLevels);
 
@@ -237,7 +237,7 @@ void TextureManager::createTextureImage(const tinygltf::Model& model, int textur
     VulkanUtils::transitionImageLayout(commandBuffer, texture.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, texture.mipLevels);
     VulkanUtils::copyBufferToImage(commandBuffer, stagingBuffer, texture.image, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
 
-    generateMipmaps(commandBuffer, texture.image, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, texture.mipLevels);
+    generateMipmaps(commandBuffer, texture.image, format, texWidth, texHeight, texture.mipLevels);
     VulkanUtils::endSingleTimeCommands(std::move(commandBuffer), *graphicsQueue);
 }
 
