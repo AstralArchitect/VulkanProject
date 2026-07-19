@@ -22,10 +22,12 @@ cpp_sources = [
     cpp_dir + 'main.cc',
     cpp_dir + 'applicationInitFunctions.cc',
     cpp_dir + 'initUtilities.cc',
+    cpp_dir + 'vulkan_utils.cc',
     
     cpp_dir + 'model.cc',
     cpp_dir + 'text_manager.cc',
-    cpp_dir + 'camera.cpp'
+    cpp_dir + 'camera.cpp',
+    cpp_dir + 'ffx-mgr.cc'
 ]
 
 sources = cpp_sources
@@ -106,3 +108,29 @@ custom_target(
     ],
     build_by_default: true,
 )
+
+ffx_shaders = [
+    'prefilter',
+    'reprojection',
+    'resolve_temporal'
+]
+
+foreach shader : ffx_shaders
+    custom_target(
+        'compile_slang_' + shader,
+        input: 'res/ffx-shaders/' + shader + '.slang',
+        output: shader + '.spv',
+        command: [
+            slangc,
+            '@INPUT@',
+            '-I', meson.project_source_root(),
+            '-target', 'spirv',
+            '-profile', 'spirv_1_4',
+            '-emit-spirv-directly',
+            '-fvk-use-entrypoint-name',
+            '-entry', 'main',
+            '-o', '@OUTPUT@',
+        ],
+        build_by_default: true,
+    )
+endforeach

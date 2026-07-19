@@ -264,4 +264,7 @@ namespace VulkanUtils {
         return transform;
     }
 
+    [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code, const vk::raii::Device &device);
+
+    std::vector<char> readFile(const std::string& filename);
 }

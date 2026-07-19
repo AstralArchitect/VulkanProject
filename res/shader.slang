@@ -14,6 +14,7 @@ struct VSOutput {
 struct CameraUBO {
     float4x4 view;
     float4x4 proj;
+    float4x4 prevViewProj;
     float4 camPos;
     float4 lightsPos[2];
     float time;
@@ -75,7 +76,7 @@ static const float linear = 0.09f;
 static const float quadratic = 0.032f;
 static const float PI = 3.14159265359;
 static const float EPSILON = 0.001f;
-static const float NUM_SAMPLES = 4;
+static const float NUM_SAMPLES = 1;
 
 float calculateAttenuation(float3 pos1, float3 pos2) {
     float distance = length(pos2 - pos1);
@@ -224,8 +225,15 @@ float next_rand(inout uint seed) {
     return float(seed) / 4294967296.0;
 }
 
-uint init_rand(float x, float y) {
-    return uint(x) * 1973u + uint(y) * 9277u;
+uint init_rand(uint x, uint y, float time) {
+    uint frameCounter = uint(time * 60.0);
+    uint seed = x + y * 1973u + frameCounter * 9277u;
+    seed = (seed ^ 61) ^ (seed >> 16);
+    seed *= 9;
+    seed = seed ^ (seed >> 4);
+    seed *= 0x27d4eb2d;
+    seed = seed ^ (seed >> 15);
+    return seed;
 }
 
 float3 ImportanceSampleGGX(float2 Xi, float roughness) {
@@ -297,10 +305,11 @@ float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float 
     return ambient + Lo + emission;
 }
 
-float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor, float roughnessFactor, inout uint seed) {
+float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor, float roughnessFactor, inout uint seed, out float outRayLength) {
     float3 V = normalize(camera.camPos.xyz - P);
     
     float3 accumulatedColor = float3(0.0);
+    float accumulatedRayLength = 0.0;
     float totalWeight = 0.0;
 
     float3 Tangent;
@@ -337,6 +346,7 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
             float2 bary = rq.CommittedTriangleBarycentrics();
 
             float hitT = rq.CommittedRayT();
+            accumulatedRayLength += hitT;
             float3 hitPosition = reflectionRayDesc.Origin + hitT * reflectionRayDesc.Direction;
 
             InstanceData inst = instanceDataBuffer[instanceID];
@@ -357,6 +367,7 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
             sampleColor = intersectionColor.rgb;
         } else {
             sampleColor = float3(.0f);
+            accumulatedRayLength += 10000.0;
         }
 
         // Fresnel calculation on the microfacet
@@ -369,9 +380,11 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
     }
 
     if (totalWeight > 0.0) {
+        outRayLength = accumulatedRayLength / totalWeight;
         return float4(accumulatedColor / totalWeight, 1.f);
     }
 
+    outRayLength = 10000.0;
     return float4(0.f);
 }
 
@@ -380,6 +393,9 @@ struct FragmentOutput
     float4 directColor : SV_Target0; // Target 0 (Ambiant + Lumière directe)
     float4 reflection : SV_Target1;  // Target 1 (Reflet bruité linéaire HDR)
     float4 normal : SV_Target2;      // Target 2 (Normales)
+    float4 roughness : SV_Target3;   // On met float4 pour simplifier parce que j'ai la flemme de changer la fonction d'alloc des renderImages
+    float4 motionVector : SV_Target4;
+    float4 rayLength : SV_Target5;
 };
 
 [shader("fragment")]
@@ -388,7 +404,7 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
 
     float4 color;
     float3 P = vertIn.fragPos;
-    uint seed = init_rand(vertIn.pos.x + (camera.time * 100), vertIn.pos.y + (camera.time * 100));
+    uint seed = init_rand(uint(vertIn.pos.x), uint(vertIn.pos.y), camera.time);
 
     if ((push.activeAttributes & 4u) != 0u) {
         float3 albedoFactor;
@@ -415,11 +431,14 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
 
         color = float4(pbr(P, N, albedoFactor, metallicFactor, roughnessFactor, push.transmissionFactor, push.emissiveColor.rgb), 1.f);
 
-        float4 reflectionColor = apply_reflection(P, N, albedoFactor, metallicFactor, roughnessFactor, seed);
+        float rayLength = 0.0;
+        float4 reflectionColor = apply_reflection(P, N, albedoFactor, metallicFactor, roughnessFactor, seed, rayLength);
 
         output.directColor = color;
         output.reflection = reflectionColor;
-        output.normal = float4(N, 1.0);
+        output.normal = float4(N * 0.5 + 0.5, 1.0);
+        output.roughness = float4(roughnessFactor, 0.0, 0.0, 0.0);
+        output.rayLength = float4(rayLength, 0.0, 0.0, 0.0);
         
     } else if ((push.activeAttributes & 1u) != 0u) {
         color =  globalTextures[push.albedoTextureIndex].Sample(vertIn.fragTexCoord);
@@ -427,7 +446,22 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
         output.directColor = color;
         output.reflection = float4(0.0);
         output.normal = float4(0.0);
+        output.roughness = float4(0.0);
+        output.rayLength = float4(10000.0, 0.0, 0.0, 0.0);
     }
     
+    // Motion vector calculation
+    float4 prevClipPos = mul(camera.prevViewProj, float4(P, 1.0));
+    float2 prevNDC = prevClipPos.xy / prevClipPos.w;
+    float4 currClipPos = mul(camera.proj, mul(camera.view, float4(P, 1.0)));
+    float2 currNDC = currClipPos.xy / currClipPos.w;
+    
+    // Convert NDC to UV (Vulkan: invert Y via -0.5)
+    float2 prevUV = prevNDC * 0.5 + 0.5;
+    float2 currUV = currNDC * 0.5 + 0.5;
+    float2 motionVector = currUV - prevUV;
+
+    output.motionVector = float4(motionVector, 0.0, 0.0);
+
     return output;
 }

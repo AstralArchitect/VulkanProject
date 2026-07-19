@@ -2,8 +2,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
-#include <unordered_map>
 
+#include "ffx-mgr.hh"
+#include "vulkan/vulkan_raii.hpp"
 #include "vulkan_app.hpp"
 
 #include "vulkan_utils.hpp"
@@ -161,6 +162,7 @@ void VulkanApp::initVulkan()
     createColorResources();
     createDepthResources();
     createRenderResources();
+    initFfx();
     createCompositionResources();
 
     createDescriptorPool();
@@ -170,9 +172,9 @@ void VulkanApp::initVulkan()
 
 void VulkanApp::createInstance()
 {
-    vk::ApplicationInfo appInfo;
+    vk::ApplicationInfo appInfo{};
 
-    appInfo.pApplicationName = "Hello Triangle";
+    appInfo.pApplicationName = "RT App";
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "No Engine";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -199,12 +201,12 @@ void VulkanApp::createInstance()
         }
     }
 
-    vk::InstanceCreateInfo createInfo;
+    vk::InstanceCreateInfo createInfo{};
     createInfo.pApplicationInfo = &appInfo;
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
 
-    vk::DebugUtilsMessengerCreateInfoEXT debugCreateInfo;
+    vk::DebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
     if (enableValidationLayers)
     {
         auto layerProperties = context.enumerateInstanceLayerProperties();
@@ -242,7 +244,7 @@ void VulkanApp::setupDebugMessenger()
     if (!enableValidationLayers)
         return;
 
-    vk::DebugUtilsMessengerCreateInfoEXT createInfo;
+    vk::DebugUtilsMessengerCreateInfoEXT createInfo{};
     populateDebugMessengerCreateInfo(createInfo);
 
     debugMessenger = vk::raii::DebugUtilsMessengerEXT(instance, createInfo);
@@ -305,7 +307,7 @@ void VulkanApp::createLogicalDevice()
         static_cast<uint32_t>(std::distance(queueFamilyProperties.begin(), graphicsQueueFamilyProperty));
 
     float queuePriority = 0.5f;
-    vk::DeviceQueueCreateInfo deviceQueueCreateInfo;
+    vk::DeviceQueueCreateInfo deviceQueueCreateInfo{};
     deviceQueueCreateInfo.queueFamilyIndex = graphicsIndex;
     deviceQueueCreateInfo.queueCount = 1;
     deviceQueueCreateInfo.pQueuePriorities = &queuePriority;
@@ -322,8 +324,9 @@ void VulkanApp::createLogicalDevice()
         featureChain = {
             {.features = {
                  .samplerAnisotropy = true,
-                 .shaderSampledImageArrayDynamicIndexing = true}},
-            {.descriptorBindingPartiallyBound = true, .runtimeDescriptorArray = false, .bufferDeviceAddress = true},
+                 .shaderSampledImageArrayDynamicIndexing = true,
+                 .shaderInt16 = true}},
+            {.shaderFloat16 = true, .descriptorBindingPartiallyBound = true, .runtimeDescriptorArray = false, .bufferDeviceAddress = true},
             {.synchronization2 = true, .dynamicRendering = true},
             {.extendedDynamicState = true},
             {.vertexInputDynamicState = true},
@@ -361,7 +364,6 @@ void VulkanApp::createSwapChain()
     swapChainSurfaceFormat = chooseSwapSurfaceFormat(availableFormats);
 
     std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(*surface);
-    uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
 
     vk::SwapchainCreateInfoKHR swapChainCreateInfo{
         .surface = *surface,
@@ -403,11 +405,6 @@ void VulkanApp::createImageViews()
 
 void VulkanApp::createDescriptorSetLayout()
 {
-    vk::DescriptorSetLayoutBinding uboLayoutBinding{.binding = 0,
-                                                    .descriptorType = vk::DescriptorType::eUniformBuffer,
-                                                    .descriptorCount = 1,
-                                                    .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment};
-
     std::array global_bindings = {
         vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
         vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
@@ -421,9 +418,64 @@ void VulkanApp::createDescriptorSetLayout()
     descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
 }
 
+void VulkanApp::initFfx() {
+    ffxMgr = new FFXMgr(device, physicalDevice, commandPool, swapChainExtent.width, swapChainExtent.height);
+
+    vk::CommandBufferAllocateInfo allocInfo{.commandPool = *commandPool,
+                                            .level = vk::CommandBufferLevel::ePrimary,
+                                            .commandBufferCount = 1};
+    vk::raii::CommandBuffer cmd = std::move(device.allocateCommandBuffers(allocInfo).front());
+    cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    auto transition_to_general = [&](const vk::raii::Image& image, vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor) {
+        vk::ImageMemoryBarrier2 barrier = {
+            .srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe,
+            .srcAccessMask = {},
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = *image,
+            .subresourceRange = {.aspectMask = aspect,
+                                 .baseMipLevel = 0, .levelCount = 1,
+                                 .baseArrayLayer = 0, .layerCount = 1}};
+        vk::DependencyInfo dependency_info = {
+            .dependencyFlags = {}, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+        cmd.pipelineBarrier2(dependency_info);
+    };
+
+    transition_to_general(ffxMgr->images.ffxReprojectedRadianceImage);
+    transition_to_general(ffxMgr->images.ffxReprojectedVarianceImage);
+
+    transition_to_general(ffxMgr->images.ffxPrefilteredRadianceImage);
+    transition_to_general(ffxMgr->images.ffxPrefilteredVarianceImage);
+    transition_to_general(ffxMgr->images.ffxFinalVarianceImage);
+    transition_to_general(ffxMgr->images.ffxAverageRadianceImage);
+
+    for (int i = 0; i < 2; i++) {
+        transition_to_general(ffxMgr->images.ffxHistoryRadianceImages[i]);
+        transition_to_general(ffxMgr->images.ffxHistoryDepthImages[i], vk::ImageAspectFlagBits::eDepth);
+        transition_to_general(ffxMgr->images.ffxHistoryNormalImages[i]);
+        transition_to_general(ffxMgr->images.ffxHistoryRoughnessImages[i]);
+        transition_to_general(ffxMgr->images.ffxSampleCountImages[i]);
+    }
+
+    cmd.end();
+    vk::SubmitInfo submitInfo{.commandBufferCount = 1, .pCommandBuffers = &*cmd};
+    graphicsQueue.submit(submitInfo);
+    graphicsQueue.waitIdle();
+
+    //                                 reflection                           normal               roughness            motion vector        ray length
+    ffxMgr->updateReprojDescriptorSets(renderImagesView[0], depthImageView, renderImagesView[1], renderImagesView[2], renderImagesView[3], renderImagesView[4]);
+    ffxMgr->updatePrefilDescriptorSets(renderImagesView[0], depthImageView, renderImagesView[1], renderImagesView[2]);
+    ffxMgr->updateResolvDescriptorSets(renderImagesView[2]);
+}
+
 void VulkanApp::createGraphicsPipeline()
 {
-    vk::raii::ShaderModule shaderModule = createShaderModule(readFile("builddir/shader.spv"));
+    vk::raii::ShaderModule shaderModule = VulkanUtils::createShaderModule(VulkanUtils::readFile("builddir/shader.spv"), device);
 
     vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
         .stage = vk::ShaderStageFlagBits::eVertex, .module = shaderModule, .pName = "vertMain"};
@@ -443,10 +495,6 @@ void VulkanApp::createGraphicsPipeline()
 
     vk::PipelineInputAssemblyStateCreateInfo inputAssembly{.topology = vk::PrimitiveTopology::eTriangleList};
 
-    vk::Viewport viewport{
-        0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f};
-    vk::Rect2D scissor{vk::Offset2D{0, 0}, swapChainExtent};
-
     vk::PipelineViewportStateCreateInfo viewportState{.viewportCount = 1, .scissorCount = 1};
 
     vk::PipelineRasterizationStateCreateInfo rasterizer{
@@ -462,7 +510,7 @@ void VulkanApp::createGraphicsPipeline()
         .rasterizationSamples = msaaSamples,
         .sampleShadingEnable = vk::False};
 
-    std::array<vk::PipelineColorBlendAttachmentState, 3> colorBlendAttachments;
+    std::array<vk::PipelineColorBlendAttachmentState, 6> colorBlendAttachments;
     for (auto &attachment : colorBlendAttachments)
     {
         attachment.blendEnable = vk::False;
@@ -502,7 +550,10 @@ void VulkanApp::createGraphicsPipeline()
         vk::ImageTiling::eOptimal,
         vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eSampledImage);
 
-    std::array<vk::Format, 3> colorFormats = {
+    std::array<vk::Format, 6> colorFormats = {
+        renderFormat,
+        renderFormat,
+        renderFormat,
         renderFormat,
         renderFormat,
         renderFormat
@@ -768,7 +819,7 @@ void VulkanApp::createDepthResources()
 {
     vk::Format depthFormat = findDepthFormat();
 
-    std::tie(depthImage, depthImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
+    std::tie(depthImage, depthImageMemory) = VulkanUtils::createImage(device, physicalDevice, swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eDeviceLocal, msaaSamples);
     depthImageView = VulkanUtils::createImageView(device, *depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
 }
 
@@ -779,7 +830,7 @@ void VulkanApp::createRenderResources()
         vk::ImageTiling::eOptimal,
         vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eSampledImage);
 
-    vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled;
+    vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc;
 
     for (int i = 0; i < sizeof(renderImages) / sizeof(vk::raii::Image); i++)
     {
@@ -842,7 +893,7 @@ void VulkanApp::createCompositionResources()
     compositionPipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
     // 3. Compute Pipeline
-    vk::raii::ShaderModule shaderModule = createShaderModule(readFile("builddir/composition.spv"));
+    vk::raii::ShaderModule shaderModule = VulkanUtils::createShaderModule(VulkanUtils::readFile("builddir/composition.spv"), device);
     vk::ComputePipelineCreateInfo pipelineInfo{
         .stage = vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eCompute,
@@ -875,59 +926,7 @@ void VulkanApp::createCompositionResources()
         .pSetLayouts = layouts.data()};
     compositionDescriptorSets = vk::raii::DescriptorSets(device, allocInfo);
 
-    // 6. Update Descriptor Sets
-    for (uint32_t i = 0; i < swapChainImageCount; ++i)
-    {
-        vk::DescriptorImageInfo directColorInfo{
-            .imageView = *colorImageView,
-            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-        vk::DescriptorImageInfo reflectionInfo{
-            .imageView = *renderImagesView[0],
-            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-        vk::DescriptorImageInfo normalInfo{
-            .imageView = *renderImagesView[1],
-            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-        vk::DescriptorImageInfo depthInfo{
-            .imageView = *depthImageView,
-            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-        vk::DescriptorImageInfo outputImageInfo{
-            .imageView = *swapChainImageViews[i],
-            .imageLayout = vk::ImageLayout::eGeneral};
-
-        std::array<vk::WriteDescriptorSet, 5> descriptorWrites = {
-            vk::WriteDescriptorSet{
-                .dstSet = *compositionDescriptorSets[i],
-                .dstBinding = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk::DescriptorType::eSampledImage,
-                .pImageInfo = &directColorInfo},
-            vk::WriteDescriptorSet{
-                .dstSet = *compositionDescriptorSets[i],
-                .dstBinding = 1,
-                .descriptorCount = 1,
-                .descriptorType = vk::DescriptorType::eSampledImage,
-                .pImageInfo = &reflectionInfo},
-            vk::WriteDescriptorSet{
-                .dstSet = *compositionDescriptorSets[i],
-                .dstBinding = 2,
-                .descriptorCount = 1,
-                .descriptorType = vk::DescriptorType::eSampledImage,
-                .pImageInfo = &normalInfo},
-            vk::WriteDescriptorSet{
-                .dstSet = *compositionDescriptorSets[i],
-                .dstBinding = 3,
-                .descriptorCount = 1,
-                .descriptorType = vk::DescriptorType::eSampledImage,
-                .pImageInfo = &depthInfo},
-            vk::WriteDescriptorSet{
-                .dstSet = *compositionDescriptorSets[i],
-                .dstBinding = 4,
-                .descriptorCount = 1,
-                .descriptorType = vk::DescriptorType::eStorageImage,
-                .pImageInfo = &outputImageInfo}};
-
-        device.updateDescriptorSets(descriptorWrites, nullptr);
-    }
+    // 6. Descriptor sets are updated dynamically per frame in updateCompositionDescriptorSet
 }
 
 void VulkanApp::createDescriptorPool()
@@ -948,7 +947,6 @@ void VulkanApp::createDescriptorPool()
 
 void VulkanApp::createDescriptorSets()
 {
-    // On crée les Layouts pour la caméra globale
     std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptorSetLayout);
     vk::DescriptorSetAllocateInfo allocInfo{
         .descriptorPool = *descriptorPool,
@@ -958,7 +956,6 @@ void VulkanApp::createDescriptorSets()
     cameraDescriptorSets.clear();
     cameraDescriptorSets = device.allocateDescriptorSets(allocInfo);
 
-    // On met à jour les Descripteurs
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         // Binding 0 : La Caméra
@@ -1009,6 +1006,9 @@ void VulkanApp::cleanupSwapChain()
 {
     swapChainImageViews.clear();
     swapChain = nullptr;
+    
+    delete ffxMgr;
+    ffxMgr = nullptr;
 }
 
 void VulkanApp::recreateSwapChain()
@@ -1029,10 +1029,14 @@ void VulkanApp::recreateSwapChain()
     createDepthResources();
     createRenderResources();
     createCompositionResources();
+    initFfx();
 }
 
 void VulkanApp::cleanup()
 {
+    delete ffxMgr;
+    ffxMgr = nullptr;
+
     // RAII handles are automatically destroyed in the reverse order of their declaration.
     // Since 'device' is declared before the Vulkan resources, it will safely be destroyed last.
 

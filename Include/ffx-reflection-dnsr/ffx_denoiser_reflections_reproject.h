@@ -333,7 +333,7 @@ void FFX_DNSR_Reflections_Reproject(int2 dispatch_thread_id, int2 group_thread_i
     min16float weight = FFX_DNSR_Reflections_GetLuminanceWeight(radiance.xyz);
     radiance.xyz *= weight;
     if (any(dispatch_thread_id >= screen_size) || any(isinf(radiance)) || any(isnan(radiance)) || weight > 1.0e3) {
-        radiance = (0.0).xxxx;
+        radiance = (0.0).xxx;
         weight   = 0.0;
     }
 

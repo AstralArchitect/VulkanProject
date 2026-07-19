@@ -28,6 +28,8 @@ import vulkan_hpp;
 
 #include "camera.hpp"
 
+#include "ffx-mgr.hh"
+
 // --- Constantes et variables globales ---
 static constexpr uint32_t WIDTH = 800;
 static constexpr uint32_t HEIGHT = 600;
@@ -43,6 +45,15 @@ public:
 
     void init();
     void run();
+
+    struct CameraUBO {
+        alignas(16) glm::mat4 view;
+        alignas(16) glm::mat4 proj;
+        alignas(16) glm::mat4 prevViewProj;
+        alignas(16) glm::vec4 camPos;        // vec4
+        alignas(16) glm::vec4 lightsPos[2];  // vec4
+        alignas(16) float time;
+    };
 private:
     std::vector<const char *> requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName, 
@@ -88,10 +99,10 @@ private:
     vk::raii::DeviceMemory depthImageMemory = nullptr;
     vk::raii::ImageView depthImageView = nullptr;
 
-    // Render images (albedo, reflect, normals)
-    vk::raii::Image renderImages[2] = {nullptr, nullptr};
-    vk::raii::DeviceMemory renderImagesMemory[2] = {nullptr, nullptr};
-    vk::raii::ImageView renderImagesView[2] = {nullptr, nullptr};
+    // Render images (reflect, normals, roughness, motion vecotr, ray length)
+    vk::raii::Image renderImages[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    vk::raii::DeviceMemory renderImagesMemory[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    vk::raii::ImageView renderImagesView[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 
     vk::raii::DescriptorPool             compositionDescriptorPool = nullptr;
     vk::raii::DescriptorSetLayout        compositionDescriptorSetLayout = nullptr;
@@ -107,14 +118,6 @@ private:
 
     float deltaTime;
     float lastFrame;
-
-    struct CameraUBO {
-        alignas(16) glm::mat4 view;
-        alignas(16) glm::mat4 proj;
-        alignas(16) glm::vec4 camPos;        // vec4
-        alignas(16) glm::vec4 lightsPos[2];  // vec4
-        alignas(16) float time;
-    };
 
     std::vector<vk::raii::Buffer> cameraUniformBuffers;
     std::vector<vk::raii::DeviceMemory> cameraUniformBuffersMemory;
@@ -144,6 +147,8 @@ private:
     void* instanceDataBufferMapped = nullptr;
 
     uint32_t frameIndex = 0;
+
+    FFXMgr* ffxMgr = nullptr;
 
     // Méthodes d'initialisation
     void initWindow();
@@ -183,6 +188,9 @@ private:
 
     void createRenderResources();
     void createCompositionResources();
+    void updateCompositionDescriptorSet(uint32_t imageIndex, uint32_t frameIndex);
+
+    void initFfx();
 
     void loadModels();
 

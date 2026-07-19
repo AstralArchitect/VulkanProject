@@ -1,3 +1,4 @@
+#include "glm/ext/matrix_float4x4.hpp"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <tiny_gltf.h>
 #define TINYGLTF
@@ -106,7 +107,7 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
         .storeOp = vk::AttachmentStoreOp::eDontCare,
         .clearValue = clearDepth};
 
-    std::array<vk::RenderingAttachmentInfo, 3> colorAttachments = {};
+    std::array<vk::RenderingAttachmentInfo, 6> colorAttachments = {};
     colorAttachments[0] = vk::RenderingAttachmentInfo{
         .imageView = *colorImageView,
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
@@ -123,6 +124,27 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
     };
     colorAttachments[2] = vk::RenderingAttachmentInfo{
         .imageView = *renderImagesView[1],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f)
+    };
+    colorAttachments[3] = vk::RenderingAttachmentInfo{
+        .imageView = *renderImagesView[2],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f)
+    };
+    colorAttachments[4] = vk::RenderingAttachmentInfo{
+        .imageView = *renderImagesView[3],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f)
+    };
+    colorAttachments[5] = vk::RenderingAttachmentInfo{
+        .imageView = *renderImagesView[4],
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eStore,
@@ -182,7 +204,12 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
         vk::PipelineStageFlagBits2::eComputeShader,
         vk::ImageAspectFlagBits::eDepth);
 
+    ffxMgr->dispatchDenoiser(commandBuffer, frameIndex, swapChainExtent.width, swapChainExtent.height, *depthImage, *renderImages[1], *renderImages[2]);
+
     commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *compositionPipeline);
+    
+    updateCompositionDescriptorSet(imageIndex, frameIndex);
+
     commandBuffer.bindDescriptorSets(
         vk::PipelineBindPoint::eCompute,
         *compositionPipelineLayout,
@@ -205,8 +232,63 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
     commandBuffer.end();
 }
 
+void VulkanApp::updateCompositionDescriptorSet(uint32_t imageIndex, uint32_t frameIndex)
+{
+    vk::DescriptorImageInfo directColorInfo{
+        .imageView = *colorImageView,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+    vk::DescriptorImageInfo reflectionInfo{
+        .imageView = *ffxMgr->images.ffxHistoryRadianceViews[((frameIndex % 2) + 1) % 2],
+        .imageLayout = vk::ImageLayout::eGeneral};
+    vk::DescriptorImageInfo normalInfo{
+        .imageView = *renderImagesView[1],
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+    vk::DescriptorImageInfo depthInfo{
+        .imageView = *depthImageView,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+    vk::DescriptorImageInfo outputImageInfo{
+        .imageView = *swapChainImageViews[imageIndex],
+        .imageLayout = vk::ImageLayout::eGeneral};
+
+    std::array<vk::WriteDescriptorSet, 5> descriptorWrites = {
+        vk::WriteDescriptorSet{
+            .dstSet = *compositionDescriptorSets[imageIndex],
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .pImageInfo = &directColorInfo},
+        vk::WriteDescriptorSet{
+            .dstSet = *compositionDescriptorSets[imageIndex],
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .pImageInfo = &reflectionInfo},
+        vk::WriteDescriptorSet{
+            .dstSet = *compositionDescriptorSets[imageIndex],
+            .dstBinding = 2,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .pImageInfo = &normalInfo},
+        vk::WriteDescriptorSet{
+            .dstSet = *compositionDescriptorSets[imageIndex],
+            .dstBinding = 3,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .pImageInfo = &depthInfo},
+        vk::WriteDescriptorSet{
+            .dstSet = *compositionDescriptorSets[imageIndex],
+            .dstBinding = 4,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .pImageInfo = &outputImageInfo}};
+
+    device.updateDescriptorSets(descriptorWrites, nullptr);
+}
+
 void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 {
+    static glm::mat4 previousViewProj = glm::mat4(1.f);
+
     // Camera and projection matrices (shared by all objects)
     glm::mat4 view = camera.GetViewMatrix();
     glm::mat4 proj = glm::perspective(
@@ -220,9 +302,14 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 
     CameraUBO ubo{};
     ubo.view = view;
+    ubo.prevViewProj = previousViewProj;
     ubo.proj = proj;
     ubo.camPos = glm::vec4(camera.Position, 1.f);
     ubo.time = time;
+
+    ffxMgr->updateConstantsBuffer(ubo.view, ubo.proj, previousViewProj);
+
+    previousViewProj = ubo.proj * ubo.view;
 
     ubo.lightsPos[0] = glm::vec4(1.5f, 2.f, 0.f, 1.f);
     ubo.lightsPos[1] = glm::vec4(-3.f, 2.f, 1.f, 1.f);
