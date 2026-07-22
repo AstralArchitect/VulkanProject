@@ -3,11 +3,12 @@
 #include <iostream>
 #include <stdexcept>
 
-#include "ffx-mgr.hh"
-#include "vulkan/vulkan_raii.hpp"
 #include "vulkan_app.hpp"
+#include "ffx-mgr.hh"
 
 #include "vulkan_utils.hpp"
+
+#include "physics_world.hpp"
 
 const std::vector<char const *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -53,6 +54,8 @@ static void framebufferResizeCallback(GLFWwindow *window, int width, int height)
 void VulkanApp::init()
 {
     initWindow();
+    PhysicsWorld::global_init();
+    physicsWorld = PhysicsWorld::create();
     initVulkan();
 }
 
@@ -68,27 +71,57 @@ void VulkanApp::processInput(GLFWwindow *window)
 {
     static bool isFullscreen = false;
     static int windowedWidth, windowedHeight, windowedPosX, windowedPosY;
+    static glm::vec3 previousBallPos = glm::vec3(1.f);
+    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[2].physicsBodyId).position;
+
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
     if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
     {
-        camera.ProcessKeyboard(LEFT, deltaTime);
-        camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
+        glm::vec3 mVec = ballPos - previousBallPos;
+        mVec = glm::normalize(mVec);
+        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+        
+        mVec = glm::mat3(glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0.f, 1.f, 0.f))) * mVec;
+
+        mVec *= 1000;
+
+        physicsWorld->add_force(physicsEntities[2].physicsBodyId, mVec);
     }
     else if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
     {
-        camera.ProcessKeyboard(RIGHT, deltaTime);
-        camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
-    } /*
-     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-     {
-         camera.ProcessKeyboard(FORWARD, deltaTime);
-     }
-     else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-     {
-         camera.ProcessKeyboard(BACKWARD, deltaTime);
-     }*/
+        glm::vec3 mVec = ballPos - previousBallPos;
+        mVec = glm::normalize(mVec);
+        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+
+        mVec = glm::mat3(glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0.f, -1.f, 0.f))) * mVec;
+
+        mVec *= 1000;
+
+        physicsWorld->add_force(physicsEntities[2].physicsBodyId, mVec);
+    }
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+    {
+        glm::vec3 mVec = ballPos - previousBallPos;
+        mVec = glm::normalize(mVec);
+        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+
+        mVec *= 1000;
+
+        physicsWorld->add_force(physicsEntities[2].physicsBodyId, mVec);
+    }
+    else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+    {
+        glm::vec3 mVec = ballPos - previousBallPos;
+        mVec = glm::normalize(mVec);
+        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+
+        mVec *= 1000;
+
+        physicsWorld->add_force(physicsEntities[2].physicsBodyId, -mVec);
+    }
+    previousBallPos = ballPos;
 
     if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS)
     {
@@ -109,6 +142,38 @@ void VulkanApp::processInput(GLFWwindow *window)
     }
 }
 
+// Point cible de la scène autour duquel tourner (ex: le centre de votre scène)
+glm::vec3 target = glm::vec3(0.0f, 1.0f, 0.0f);
+
+// Mouse callback
+void VulkanApp::mouse(double xposIn, double yposIn) {
+    static double lastX = WIDTH / 2.0;
+    static double lastY = HEIGHT / 2.0;
+    static bool firstMouse = true;
+
+    if (firstMouse)
+    {
+        lastX = xposIn;
+        lastY = yposIn;
+        firstMouse = false;
+    }
+
+    float xoffset = xposIn - lastX;
+    float yoffset = lastY - yposIn; // inversé car les coordonnées Y vont du bas vers le haut
+    lastX = xposIn;
+    lastY = yposIn;
+
+    // 1. Conserver la distance actuelle par rapport au point cible
+    float radius = glm::distance(camera.Position, target);
+
+    // 2. Mettre à jour les angles Yaw et Pitch ainsi que le vecteur Front de la caméra
+    camera.ProcessMouseMovement(xoffset, yoffset);
+
+    // 3. Recalculer la position de la caméra pour orbiter autour du point cible
+    camera.Position = target - camera.Front * radius;
+}
+
+
 void VulkanApp::initWindow()
 {
     if (!glfwInit())
@@ -122,6 +187,8 @@ void VulkanApp::initWindow()
     window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    glfwSetCursorPosCallback(window, mouseCallback);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     if (!window)
     {
@@ -154,6 +221,7 @@ void VulkanApp::initVulkan()
 
     createDescriptorSetLayout();
     createGraphicsPipeline();
+    createBackgroundPipeline();
 
     loadModels();
     createTlas();
@@ -164,6 +232,7 @@ void VulkanApp::initVulkan()
     createRenderResources();
     initFfx();
     createCompositionResources();
+    createBackgroundTexture();
 
     createDescriptorPool();
     createDescriptorSets();
@@ -315,6 +384,7 @@ void VulkanApp::createLogicalDevice()
     // Create a chain of feature structures
     vk::StructureChain<
         vk::PhysicalDeviceFeatures2,
+        vk::PhysicalDeviceVulkan11Features,
         vk::PhysicalDeviceVulkan12Features,
         vk::PhysicalDeviceVulkan13Features,
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
@@ -323,9 +393,11 @@ void VulkanApp::createLogicalDevice()
         vk::PhysicalDeviceRayQueryFeaturesKHR>
         featureChain = {
             {.features = {
+                 .independentBlend = true,
                  .samplerAnisotropy = true,
                  .shaderSampledImageArrayDynamicIndexing = true,
                  .shaderInt16 = true}},
+            {.shaderDrawParameters = true},
             {.shaderFloat16 = true, .descriptorBindingPartiallyBound = true, .runtimeDescriptorArray = false, .bufferDeviceAddress = true},
             {.synchronization2 = true, .dynamicRendering = true},
             {.extendedDynamicState = true},
@@ -582,6 +654,98 @@ void VulkanApp::createGraphicsPipeline()
         vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
 }
 
+void VulkanApp::createBackgroundPipeline()
+{
+    vk::raii::ShaderModule shaderModule = VulkanUtils::createShaderModule(VulkanUtils::readFile("builddir/background.spv"), device);
+
+    vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
+        .stage = vk::ShaderStageFlagBits::eVertex, .module = shaderModule, .pName = "vertMain"};
+
+    vk::PipelineShaderStageCreateInfo fragShaderStageInfo{
+        .stage = vk::ShaderStageFlagBits::eFragment, .module = shaderModule, .pName = "fragMain"};
+
+    vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+
+    vk::PipelineDynamicStateCreateInfo dynamicState{
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data()};
+
+    vk::PipelineVertexInputStateCreateInfo vertexInputInfo{};
+
+    vk::PipelineInputAssemblyStateCreateInfo inputAssembly{.topology = vk::PrimitiveTopology::eTriangleList};
+
+    vk::PipelineViewportStateCreateInfo viewportState{.viewportCount = 1, .scissorCount = 1};
+
+    vk::PipelineRasterizationStateCreateInfo rasterizer{
+        .depthClampEnable = vk::False,
+        .rasterizerDiscardEnable = vk::False,
+        .polygonMode = vk::PolygonMode::eFill,
+        .cullMode = vk::CullModeFlagBits::eNone,
+        .frontFace = vk::FrontFace::eCounterClockwise,
+        .depthBiasEnable = vk::False,
+        .lineWidth = 1.0f};
+
+    vk::PipelineMultisampleStateCreateInfo multisampling{
+        .rasterizationSamples = msaaSamples,
+        .sampleShadingEnable = vk::False};
+
+    std::array<vk::PipelineColorBlendAttachmentState, 6> colorBlendAttachments;
+    for (int i = 0; i < 6; i++)
+    {
+        colorBlendAttachments[i].blendEnable = vk::False;
+        if (i == 0) {
+            colorBlendAttachments[i].colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                                      vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        } else {
+            colorBlendAttachments[i].colorWriteMask = {};
+        }
+    }
+    
+    vk::PipelineColorBlendStateCreateInfo colorBlending{
+        .logicOpEnable = vk::False,
+        .logicOp = vk::LogicOp::eCopy,
+        .attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size()),
+        .pAttachments = colorBlendAttachments.data()};
+
+    vk::PipelineDepthStencilStateCreateInfo depthStencil{
+        .depthTestEnable = vk::True,
+        .depthWriteEnable = vk::False,
+        .depthCompareOp = vk::CompareOp::eLessOrEqual, // Z = 1.0 passes
+        .depthBoundsTestEnable = vk::False,
+        .stencilTestEnable = vk::False};
+
+    vk::Format renderFormat = findSupportedFormat(
+        {vk::Format::eR16G16B16A16Sfloat, vk::Format::eR8G8B8A8Unorm, vk::Format::eB8G8R8A8Unorm},
+        vk::ImageTiling::eOptimal,
+        vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eSampledImage);
+
+    std::array<vk::Format, 6> colorFormats = {
+        renderFormat, renderFormat, renderFormat, renderFormat, renderFormat, renderFormat
+    };
+
+    vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipelineCreateInfoChain = {
+        {.stageCount = 2,
+         .pStages = shaderStages,
+         .pVertexInputState = &vertexInputInfo,
+         .pInputAssemblyState = &inputAssembly,
+         .pViewportState = &viewportState,
+         .pRasterizationState = &rasterizer,
+         .pMultisampleState = &multisampling,
+         .pDepthStencilState = &depthStencil,
+         .pColorBlendState = &colorBlending,
+         .pDynamicState = &dynamicState,
+         .layout = pipelineLayout,
+         .renderPass = nullptr},
+        {.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size()),
+         .pColorAttachmentFormats = colorFormats.data(),
+         .depthAttachmentFormat = findDepthFormat()}};
+
+    backgroundPipeline =
+        vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
+}
+
 void VulkanApp::createCommandPool()
 {
     vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
@@ -789,15 +953,12 @@ void VulkanApp::updateTlasInstances()
 
 void VulkanApp::createUniformBuffers()
 {
-    // On nettoie les anciens buffers globaux s'ils existent (utile lors du redimensionnement de la fenêtre)
     cameraUniformBuffers.clear();
     cameraUniformBuffersMemory.clear();
     cameraUniformBuffersMapped.clear();
 
-    // La nouvelle taille : juste les matrices View et Proj
     vk::DeviceSize bufferSize = sizeof(CameraUBO);
 
-    // On crée uniquement 1 buffer par Frame in Flight
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         auto [buffer, bufferMem] = VulkanUtils::createBuffer(
@@ -807,7 +968,6 @@ void VulkanApp::createUniformBuffers()
             vk::BufferUsageFlagBits::eUniformBuffer,
             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-        // On map la mémoire de façon persistante
         cameraUniformBuffersMapped.emplace_back(bufferMem.mapMemory(0, bufferSize));
 
         cameraUniformBuffers.emplace_back(std::move(buffer));
@@ -853,7 +1013,6 @@ void VulkanApp::createCompositionResources()
     compositionPipelineLayout = nullptr;
     compositionDescriptorSetLayout = nullptr;
 
-    // 1. Descriptor Set Layout
     std::array<vk::DescriptorSetLayoutBinding, 5> bindings = {
         vk::DescriptorSetLayoutBinding{
             .binding = 0,
@@ -886,13 +1045,11 @@ void VulkanApp::createCompositionResources()
         .pBindings = bindings.data()};
     compositionDescriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
 
-    // 2. Pipeline Layout
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
         .setLayoutCount = 1,
         .pSetLayouts = &(*compositionDescriptorSetLayout)};
     compositionPipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
-    // 3. Compute Pipeline
     vk::raii::ShaderModule shaderModule = VulkanUtils::createShaderModule(VulkanUtils::readFile("builddir/composition.spv"), device);
     vk::ComputePipelineCreateInfo pipelineInfo{
         .stage = vk::PipelineShaderStageCreateInfo{
@@ -902,7 +1059,6 @@ void VulkanApp::createCompositionResources()
         .layout = *compositionPipelineLayout};
     compositionPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
 
-    // 4. Descriptor Pool
     uint32_t swapChainImageCount = static_cast<uint32_t>(swapChainImageViews.size());
     std::array<vk::DescriptorPoolSize, 2> poolSizes = {
         vk::DescriptorPoolSize{
@@ -918,15 +1074,16 @@ void VulkanApp::createCompositionResources()
         .pPoolSizes = poolSizes.data()};
     compositionDescriptorPool = vk::raii::DescriptorPool(device, poolInfo);
 
-    // 5. Allocate Descriptor Sets
     std::vector<vk::DescriptorSetLayout> layouts(swapChainImageCount, *compositionDescriptorSetLayout);
     vk::DescriptorSetAllocateInfo allocInfo{
         .descriptorPool = *compositionDescriptorPool,
         .descriptorSetCount = swapChainImageCount,
         .pSetLayouts = layouts.data()};
     compositionDescriptorSets = vk::raii::DescriptorSets(device, allocInfo);
+}
 
-    // 6. Descriptor sets are updated dynamically per frame in updateCompositionDescriptorSet
+void VulkanApp::createBackgroundTexture() {
+    backgroundTexture = VulkanUtils::loadHDRTexture(device, physicalDevice, commandPool, graphicsQueue, "res/textures/background2.hdr");
 }
 
 void VulkanApp::createDescriptorPool()
@@ -975,6 +1132,12 @@ void VulkanApp::createDescriptorSets()
             .offset = 0,
             .range = VK_WHOLE_SIZE};
 
+        vk::DescriptorImageInfo imageInfo{
+            .sampler = *backgroundTexture.sampler,
+            .imageView = *backgroundTexture.imageView,
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+        };
+
         std::array descriptorWrites{
             vk::WriteDescriptorSet{
                 .dstSet = *cameraDescriptorSets[i],
@@ -996,7 +1159,15 @@ void VulkanApp::createDescriptorSets()
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
                 .descriptorType = vk::DescriptorType::eStorageBuffer,
-                .pBufferInfo = &instanceDataInfo}};
+                .pBufferInfo = &instanceDataInfo},
+            vk::WriteDescriptorSet{
+                .dstSet = *cameraDescriptorSets[i],
+                .dstBinding = 3,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                .pImageInfo = &imageInfo}
+            };
 
         device.updateDescriptorSets(descriptorWrites, {});
     }
@@ -1036,6 +1207,9 @@ void VulkanApp::cleanup()
 {
     delete ffxMgr;
     ffxMgr = nullptr;
+
+    physicsWorld.reset();
+    PhysicsWorld::global_shutdown();
 
     // RAII handles are automatically destroyed in the reverse order of their declaration.
     // Since 'device' is declared before the Vulkan resources, it will safely be destroyed last.

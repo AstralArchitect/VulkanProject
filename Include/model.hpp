@@ -26,6 +26,9 @@ import vulkan_hpp;
 #include <tiny_gltf.h>
 #endif
 
+#include <Jolt/Jolt.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+
 class TextureManager;
 
 class GltfMaterial {
@@ -179,16 +182,24 @@ public:
         return count;
     }
 
+    void collectPhysicsVertices(const std::vector<unsigned char>& globalVertexData, JPH::Array<JPH::Vec3>& outPositions, glm::mat4 parentMatrix) const;
+
 private:
     const GltfMesh* mesh;
     std::vector<GltfNode> children;
     glm::mat4 node_transform;
 };
 
+namespace JPH {
+    class ShapeSettings;
+}
+
 class GltfModel {
 public:
     GltfModel(const std::string& path, vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice, vk::raii::CommandPool& commandPool, vk::raii::Queue& graphicsQueue, TextureManager& textureManager);
     ~GltfModel() = default;
+
+    JPH::ShapeSettings* getConvexHull() const;
 
     // Ajout du pipelineLayout pour mettre à jour les transformations des nodes lors du dessin
     void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout) {
@@ -198,7 +209,7 @@ public:
 
         // 3. On lance le dessin récursif sur les nœuds racines (root nodes)
         for (auto& node : rootNodes) {
-            node.draw(commandBuffer, pipelineLayout, modelTransform, globalVertexBuffer);
+            node.draw(commandBuffer, pipelineLayout, modelTransform * staticTransform, globalVertexBuffer);
         }
     }
 
@@ -213,7 +224,7 @@ public:
         vk::DeviceAddress iAddr = device.getBufferAddress(iInfo);
 
         for (auto& node : rootNodes) {
-            node.populateTlasInstances(instances, instanceData, device, modelTransform, customIndexOffset, vAddr, iAddr);
+            node.populateTlasInstances(instances, instanceData, device, modelTransform * staticTransform, customIndexOffset, vAddr, iAddr);
         }
     }
 
@@ -235,10 +246,17 @@ public:
 
     glm::mat4 modelTransform = glm::mat4(1.f);
 
+    void setStaticTransform(glm::mat4 transform) {
+        if (staticTransform != glm::mat4(1.f)) throw std::runtime_error("Cannot modify static transform twice");
+        staticTransform = transform; 
+    }
+
     // Liste des meshes
     std::vector<GltfMesh> meshes;
 
 private:
+    glm::mat4 staticTransform = glm::mat4(1.f);
+
     std::vector<unsigned char> globalVertexData;
     std::vector<uint32_t> indices;
 

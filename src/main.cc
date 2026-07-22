@@ -1,16 +1,16 @@
-#include "glm/ext/matrix_float4x4.hpp"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <tiny_gltf.h>
 #define TINYGLTF
 
 #include <iostream>
 
-#include <chrono>
-
 #include "vulkan_app.hpp"
 
+#include "jolt_physics.hpp"
+#include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Collision/Shape/BoxShape.h>
+
 const int MAX_FRAMES_IN_FLIGHT = 2;
-const double PI = 3.1415926535;
 
 void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 {
@@ -170,10 +170,20 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 1, *textureManager.getDescriptorSet(), nullptr);
 
+    // 1. Mise à jour des matrices des modèles physiques depuis Jolt
+    for (auto &entity : physicsEntities)
+    {
+        glm::mat4 objectMatrix = physicsWorld->get_body_pose(entity.physicsBodyId).to_matrix();
+        entity.graphicModel->modelTransform = objectMatrix;
+    }
+
     for (auto &model : models)
     {
         model->draw(commandBuffer, pipelineLayout);
     }
+
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *backgroundPipeline);
+    commandBuffer.draw(3, 1, 0, 0);
 
     commandBuffer.endRendering();
 
@@ -289,12 +299,45 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 {
     static glm::mat4 previousViewProj = glm::mat4(1.f);
 
+    static glm::vec3 previousCamPoses[3] = {glm::vec3(1.f), glm::vec3(1.f), glm::vec3(1.f)};
+    static glm::vec3 previousBallPos = glm::vec3(1.f);
+
+    // Get the camera pos from the ball motion vector
+    // Get the normalized ball motion vector
+    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[2].physicsBodyId).position;
+    glm::vec3 mVec = ballPos - previousBallPos;
+    mVec = glm::normalize(mVec);
+    mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
+
+    // Calculate the camera position
+    glm::vec3 camPos;
+    camPos = ballPos;
+    camPos += glm::vec3(0.f, 2.f, 0.f);
+    camPos -= mVec * 3.f;
+
+    for (int i = 0; i < 3; i++) {
+        camPos += previousCamPoses[i];
+    }
+    camPos /= 4;
+
+    camera.Position = camPos;
+    camera.lookAt(ballPos);
+
+    previousBallPos = ballPos;
+    for (int i = 2; i >= 0; i--) {
+        if (i == 0) {
+            previousCamPoses[i] = camPos;
+            break;
+        }
+        previousCamPoses[i] = previousCamPoses[i - 1];
+    }
+
     // Camera and projection matrices (shared by all objects)
     glm::mat4 view = camera.GetViewMatrix();
     glm::mat4 proj = glm::perspective(
         glm::radians(45.0f),
         static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height),
-        0.1f, 20.0f);
+        0.1f, 500.0f);
 
     proj[1][1] *= -1; // Flip Y for Vulkan
 
@@ -311,39 +354,6 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
 
     previousViewProj = ubo.proj * ubo.view;
 
-    ubo.lightsPos[0] = glm::vec4(1.5f, 2.f, 0.f, 1.f);
-    ubo.lightsPos[1] = glm::vec4(-3.f, 2.f, 1.f, 1.f);
-
-    // Placement des aiguilles
-    models[3]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.075f));
-    models[3]->modelTransform = glm::translate(models[3]->modelTransform, glm::vec3(0.f, 7.0f, 2.f));
-    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 1.0f, 0.f));
-    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 0.0f, 1.f));
-    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(-90.f), glm::vec3(0.f, 1.0f, 0.f));
-
-    models[4]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.075f));
-    models[4]->modelTransform = glm::translate(models[4]->modelTransform, glm::vec3(0.f, 7.0f, 2.f));
-    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 1.0f, 0.f));
-    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(90.f), glm::vec3(0.f, 0.0f, 1.f));
-    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(-90.f), glm::vec3(0.f, 1.0f, 0.f));
-
-    // Alignement sur l'heure actuelle
-    // get the actual time
-    auto now_time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-
-    // Convert to local time components
-    struct tm* local_time = localtime(&now_time);  // or gmtime() for UTC
-
-    int8_t minutes = local_time->tm_min;
-    int32_t hours = local_time->tm_hour;
-
-    if (hours == 0) {
-        hours = 12; // Convert 0 to 12 for midnight/noon
-    }
-    // convert the actual time into degrees
-    models[3]->modelTransform = glm::rotate(models[3]->modelTransform, glm::radians(minutes * 6.f), glm::vec3(0.0, -1.0, 0.0));
-    models[4]->modelTransform = glm::rotate(models[4]->modelTransform, glm::radians(hours * 30.f), glm::vec3(0.0, -1.0, 0.0));
-
     memcpy(cameraUniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }
 
@@ -353,9 +363,16 @@ void VulkanApp::drawFrame()
     deltaTime = currentFrame - lastFrame;
     lastFrame = currentFrame;
 
+    // On limite le deltaTime pour éviter que la physique n'explose
+    // (notamment à la première frame où le chargement a pris plusieurs secondes !)
+    float physicsDeltaTime = deltaTime;
+    if (physicsDeltaTime > 0.1f) physicsDeltaTime = 0.1f;
+
     // input
     // -----
     processInput(window);
+
+    physicsWorld->step(physicsDeltaTime);
 
     // Note: inFlightFences, presentCompleteSemaphores, and commandBuffers are
     // indexed by frameIndex,
@@ -425,63 +442,75 @@ void VulkanApp::drawFrame()
 void VulkanApp::loadModels()
 {
     models.push_back(std::make_unique<GltfModel>(
-        "res/models/horloge.glb",
+        "res/models/plan.glb",
         device,
         physicalDevice,
         commandPool,
         graphicsQueue,
         textureManager));
 
-    models[0]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.5f));
+    models.back()->setStaticTransform(glm::scale_slow(glm::mat4(1.f), glm::vec3(100.f)));
+
+    JPH::BodyCreationSettings floorSettings(
+        models.back()->getConvexHull(), 
+        JPH::RVec3(0.0f, -4.0f, 0.0f),
+        JPH::Quat::sIdentity(), 
+        JPH::EMotionType::Static, 
+        Layers::NON_MOVING
+    );
+    JPH::BodyID floorBodyId = physicsWorld->create_body(floorSettings);
+
+    PhysicsEntity floorEntity;
+    floorEntity.physicsBodyId = floorBodyId;
+    floorEntity.graphicModel = models.back().get();
+
+    physicsEntities.push_back(floorEntity);
 
     models.push_back(std::make_unique<GltfModel>(
-        "res/models/mirror.glb",
+        "res/models/tobogan.glb",
         device,
         physicalDevice,
         commandPool,
         graphicsQueue,
         textureManager));
 
-    models[1]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.5f));
-    models[1]->modelTransform = glm::translate(models[1]->modelTransform, glm::vec3(-2.f, 0.0f, -1.25f));
-    models[1]->modelTransform = glm::rotate(models[1]->modelTransform, glm::radians(225.f), glm::vec3(0.f, 1.0f, 0.f));
+    JPH::BodyCreationSettings toboganSettings(
+        models.back()->getConvexHull(),
+        JPH::RVec3(0.f, 1.f, -5.f),
+        JPH::Quat::sIdentity(),
+        JPH::EMotionType::Static,
+        Layers::NON_MOVING
+    );
+    JPH::BodyID toboganBodyId = physicsWorld->create_body(toboganSettings);
+
+    PhysicsEntity toboganEntity;
+    toboganEntity.physicsBodyId = toboganBodyId;
+    toboganEntity.graphicModel = models.back().get();
+
+    physicsEntities.push_back(toboganEntity);
 
     models.push_back(std::make_unique<GltfModel>(
-        "res/models/armoire.glb",
+        "res/models/sphere.glb",
         device,
         physicalDevice,
         commandPool,
         graphicsQueue,
         textureManager));
 
-    models[2]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(2.f));
-    models[2]->modelTransform = glm::translate(models[2]->modelTransform, glm::vec3(0.f, 0.f, 0.f));
+    JPH::BodyCreationSettings sphereSettings(
+        models.back()->getConvexHull(),
+        JPH::RVec3(0.f, 10.f, 0.f),
+        JPH::Quat::sIdentity(),
+        JPH::EMotionType::Dynamic,
+        Layers::MOVING
+    );
+    JPH::BodyID sphereBodyId = physicsWorld->create_body(sphereSettings);
 
-    models.push_back(std::make_unique<GltfModel>(
-        "res/models/aiguille.glb",
-        device,
-        physicalDevice,
-        commandPool,
-        graphicsQueue,
-        textureManager));
+    PhysicsEntity sphereEntity;
+    sphereEntity.physicsBodyId = sphereBodyId;
+    sphereEntity.graphicModel = models.back().get();
 
-    models.push_back(std::make_unique<GltfModel>(
-        "res/models/aiguille_heure.glb",
-        device,
-        physicalDevice,
-        commandPool,
-        graphicsQueue,
-        textureManager));
-
-    models.push_back(std::make_unique<GltfModel>(
-        "res/models/lampe.glb",
-        device,
-        physicalDevice,
-        commandPool,
-        graphicsQueue,
-        textureManager));
-
-    models[5]->modelTransform = glm::scale(glm::mat4(1.f), glm::vec3(.5f)) * glm::translate(glm::mat4(1.f), glm::vec3(3.f, 0.f, 0.f));
+    physicsEntities.push_back(sphereEntity);
 }
 
 void VulkanApp::mainLoop()

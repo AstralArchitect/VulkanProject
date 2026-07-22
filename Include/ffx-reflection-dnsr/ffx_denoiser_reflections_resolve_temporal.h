@@ -140,6 +140,12 @@ void FFX_DNSR_Reflections_ResolveTemporal(int2 dispatch_thread_id, int2 group_th
         }
 
     }
+    
+    // Bypass denoiser entirely for perfect mirrors since they don't need it and it avoids all tracking artifacts.
+    if (roughness < 0.01) {
+        new_signal = FFX_DNSR_Reflections_LoadRadiance(dispatch_thread_id);
+        new_variance = 0.0;
+    }
     FFX_DNSR_Reflections_StoreTemporalAccumulation(dispatch_thread_id, new_signal, new_variance);
 }
 

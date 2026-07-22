@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vulkan_utils.hpp"
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES)
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #include <vulkan/vulkan_raii.hpp>
@@ -30,6 +31,8 @@ import vulkan_hpp;
 
 #include "ffx-mgr.hh"
 
+#include "physics_world.hpp"
+
 // --- Constantes et variables globales ---
 static constexpr uint32_t WIDTH = 800;
 static constexpr uint32_t HEIGHT = 600;
@@ -45,16 +48,21 @@ public:
 
     void init();
     void run();
+private:
+    // structs 
+    struct PhysicsEntity {
+        GltfModel* graphicModel;
+        JPH::BodyID physicsBodyId;
+    };
 
     struct CameraUBO {
         alignas(16) glm::mat4 view;
         alignas(16) glm::mat4 proj;
         alignas(16) glm::mat4 prevViewProj;
         alignas(16) glm::vec4 camPos;        // vec4
-        alignas(16) glm::vec4 lightsPos[2];  // vec4
         alignas(16) float time;
     };
-private:
+
     std::vector<const char *> requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName, 
         "VK_EXT_extended_dynamic_state", 
@@ -87,11 +95,13 @@ private:
     vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
     vk::raii::Pipeline graphicsPipeline = nullptr;
+    vk::raii::Pipeline backgroundPipeline = nullptr;
 
     vk::raii::CommandPool commandPool = nullptr;
     std::vector<vk::raii::CommandBuffer> commandBuffers;
 
     std::vector<std::unique_ptr<GltfModel>> models;
+    std::vector<PhysicsEntity> physicsEntities;
 
     TextureManager textureManager;
 
@@ -113,6 +123,8 @@ private:
     vk::raii::Image colorImage = nullptr;
     vk::raii::DeviceMemory colorImageMemory = nullptr;
     vk::raii::ImageView colorImageView = nullptr;
+
+    VulkanUtils::HDRTexture backgroundTexture;
 
     Camera camera;
 
@@ -150,6 +162,8 @@ private:
 
     FFXMgr* ffxMgr = nullptr;
 
+    std::unique_ptr<PhysicsWorld> physicsWorld;
+
     // Méthodes d'initialisation
     void initWindow();
     void initVulkan();
@@ -157,6 +171,14 @@ private:
     void cleanup();
 
     void processInput(GLFWwindow *window);
+    void mouse(double xposIn, double yposIn);
+
+    static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
+        auto app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+        if (app) {
+            app->mouse(xpos, ypos);
+        }
+    }
 
     // Méthodes Vulkan
     void createInstance();
@@ -171,6 +193,7 @@ private:
     void createImageViews();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
+    void createBackgroundPipeline();
     
     void createCommandPool();
     void createCommandBuffers();
@@ -180,6 +203,8 @@ private:
     
     void createSyncObjects();
     void createUniformBuffers();
+
+    void createBackgroundTexture();
 
     void createDescriptorPool();
     void createDescriptorSets();

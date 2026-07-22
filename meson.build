@@ -8,7 +8,7 @@ project(
 
 cpp_compiler = meson.get_compiler('cpp')
 
-add_project_arguments('-DGLM_FORCE_DEFAULT_ALIGNED_GENTYPES', '-DGLM_FORCE_DEPTH_ZERO_TO_ONE', language: 'cpp')
+add_project_arguments('-DGLM_FORCE_DEFAULT_ALIGNED_GENTYPES', '-DGLM_FORCE_DEPTH_ZERO_TO_ONE', '-DJPH_PROFILE_ENABLED=0', '-DJPH_DEBUG_RENDERER=0', '-DJPH_FLOATING_POINT_EXCEPTIONS_ENABLED=0', language: 'cpp')
 
 if cpp_compiler.get_id() == 'gcc'
     add_global_arguments('-std=gnu++20', language: 'cpp')
@@ -27,7 +27,8 @@ cpp_sources = [
     cpp_dir + 'model.cc',
     cpp_dir + 'text_manager.cc',
     cpp_dir + 'camera.cpp',
-    cpp_dir + 'ffx-mgr.cc'
+    cpp_dir + 'ffx-mgr.cc',
+    cpp_dir + 'jolt_physics.cc'
 ]
 
 sources = cpp_sources
@@ -56,6 +57,9 @@ jolt_options.add_cmake_defines({
     'TARGET_SAMPLES': 'OFF',
     'TARGET_VIEWER': 'OFF',
     'USE_STATIC_MSVC_RUNTIME_LIBRARY': 'OFF',
+    'ENABLE_PROFILER': 'OFF',
+    'ENABLE_DEBUG_RENDERER': 'OFF',
+    'ENABLE_FLOATING_POINT_EXCEPTIONS': 'OFF'
     # 'USE_DOUBLE_PRECISION': 'ON'
 })
 
@@ -76,7 +80,7 @@ slangc = find_program('slangc', required: true)
 
 custom_target(
     'compile_slang_shader',
-    input: 'res/shader.slang',
+    input: 'res/shaders/pbr.slang',
     output: 'shader.spv',
     command: [
         slangc,
@@ -93,8 +97,26 @@ custom_target(
 )
 
 custom_target(
+    'compile_slang_background',
+    input: 'res/shaders/background.slang',
+    output: 'background.spv',
+    command: [
+        slangc,
+        '@INPUT@',
+        '-target', 'spirv',
+        '-profile', 'spirv_1_4',
+        '-emit-spirv-directly',
+        '-fvk-use-entrypoint-name',
+        '-entry', 'vertMain',
+        '-entry', 'fragMain',
+        '-o', '@OUTPUT@',
+    ],
+    build_by_default: true,
+)
+
+custom_target(
     'compile_slang_composition',
-    input: 'res/composition.slang',
+    input: 'res/shaders/composition.slang',
     output: 'composition.spv',
     command: [
         slangc,
@@ -118,7 +140,7 @@ ffx_shaders = [
 foreach shader : ffx_shaders
     custom_target(
         'compile_slang_' + shader,
-        input: 'res/ffx-shaders/' + shader + '.slang',
+        input: 'res/shaders/ffx/' + shader + '.slang',
         output: shader + '.spv',
         command: [
             slangc,

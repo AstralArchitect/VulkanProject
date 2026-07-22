@@ -556,7 +556,10 @@ GltfModel::GltfModel(const std::string &path, vk::raii::Device &device, vk::raii
             }
 
             // Get the material of this primitive
-            tinygltf::Material material = model.materials[primitive.material];
+            tinygltf::Material material;
+            if (primitive.material >= 0 && primitive.material < model.materials.size()) {
+                material = model.materials[primitive.material];
+            }
 
             // Create a GltfPrimitive and add it to the GltfMesh
             GltfPrimitive gltfPrimitive(model, firstIndex, static_cast<uint32_t>(indexCount), posAccessor.count, byteOffset, material, hasNormals, binding, attributes, textureManager, path);
@@ -585,4 +588,42 @@ GltfModel::GltfModel(const std::string &path, vk::raii::Device &device, vk::raii
     {
         rootNodes.emplace_back(*this, model, model.nodes[nodeIndex], glm::mat4(1.0f));
     }
+}
+
+void GltfNode::collectPhysicsVertices(const std::vector<unsigned char>& globalVertexData, JPH::Array<JPH::Vec3>& outPositions, glm::mat4 parentMatrix) const {
+    glm::mat4 globalTransform = parentMatrix * node_transform;
+
+    if (mesh) {
+        for (const auto& primitive : mesh->getPrimitives()) {
+            size_t vertexCount = primitive.getVertexCount();
+            size_t stride = primitive.getStride();
+            size_t byteOffset = primitive.getByteOffset();
+
+            for (size_t i = 0; i < vertexCount; i++) {
+                const float* pos = reinterpret_cast<const float*>(&globalVertexData[byteOffset + i * stride]);
+                glm::vec4 worldPos = globalTransform * glm::vec4(pos[0], pos[1], pos[2], 1.0f);
+                outPositions.push_back(JPH::Vec3(worldPos.x, worldPos.y, worldPos.z));
+            }
+        }
+    }
+
+    for (const auto& child : children) {
+        child.collectPhysicsVertices(globalVertexData, outPositions, globalTransform);
+    }
+}
+
+JPH::ShapeSettings* GltfModel::getConvexHull() const {
+    JPH::Array<JPH::Vec3> positions;
+
+    // On parcourt la hiérarchie des nœuds du glTF pour appliquer les transformations de nœuds (node_transform)
+    for (const auto& rootNode : rootNodes) {
+        rootNode.collectPhysicsVertices(globalVertexData, positions, staticTransform);
+    }
+
+    if (positions.empty()) {
+        throw std::runtime_error("Aucun sommet trouvé pour générer la Convex Hull !");
+    }
+
+    // Jolt se charge de calculer l'enveloppe convexe optimale
+    return new JPH::ConvexHullShapeSettings(positions);
 }

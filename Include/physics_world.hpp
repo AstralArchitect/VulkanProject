@@ -1,9 +1,15 @@
 #pragma once
 
+#include <memory>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
+
+#include <Jolt/Jolt.h>
+#include <Jolt/Physics/Body/BodyID.h>
+#include <Jolt/Physics/Body/MotionType.h>
+#include <Jolt/Physics/Body/BodyCreationSettings.h>
 
 struct PhysicsPose {
     glm::vec3 position;
@@ -50,4 +56,8 @@ public:
     virtual bool raycast(const glm::vec3& origin, const glm::vec3& direction, float max_distance,
                          float& out_distance, glm::vec3& out_normal,
                          JPH::BodyID& out_body_id) const = 0;
+
+    virtual void add_force(JPH::BodyID body_id, const glm::vec3& force) = 0;
+    virtual void add_impulse(JPH::BodyID body_id, const glm::vec3& impulse) = 0;
+
 };

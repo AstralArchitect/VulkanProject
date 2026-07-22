@@ -163,6 +163,12 @@ void FFX_DNSR_Reflections_PickReprojection(int2            dispatch_thread_id,  
     min16float3 history_normal;
     float       history_linear_depth;
 
+    float depth        = FFX_DNSR_Reflections_LoadDepth(dispatch_thread_id);
+    float linear_depth = FFX_DNSR_Reflections_GetLinearDepth(uv, depth);
+
+    reprojection_uv = uv;
+    reprojection    = local_neighborhood.mean;
+
     {
         const float2      motion_vector             = FFX_DNSR_Reflections_LoadMotionVector(dispatch_thread_id);
         const float2      surface_reprojection_uv   = FFX_DNSR_Reflections_GetSurfaceReprojection(dispatch_thread_id, uv, motion_vector);
@@ -175,36 +181,38 @@ void FFX_DNSR_Reflections_PickReprojection(int2            dispatch_thread_id,  
         const float       surface_normal_similarity = dot(normalize((float3)surface_normal), normalize((float3)normal));
         const min16float  hit_roughness             = FFX_DNSR_Reflections_SampleRoughnessHistory(hit_reprojection_uv);
         const min16float  surface_roughness         = FFX_DNSR_Reflections_SampleRoughnessHistory(surface_reprojection_uv);
+        const float       history_num_samples       = FFX_DNSR_Reflections_SampleNumSamplesHistory(surface_reprojection_uv);
 
         // Choose reprojection uv based on similarity to the local neighborhood.
         if (hit_normal_similarity > FFX_DNSR_REFLECTIONS_REPROJECTION_NORMAL_SIMILARITY_THRESHOLD  // Candidate for mirror reflection parallax
             && hit_normal_similarity + 1.0e-3 > surface_normal_similarity                          //
             && abs(hit_roughness - roughness) < abs(surface_roughness - roughness) + 1.0e-3        //
+            && dot2(hit_history - local_neighborhood.mean) < FFX_DNSR_REFLECTIONS_REPROJECT_SURFACE_DISCARD_VARIANCE_WEIGHT * max(length(local_neighborhood.variance), 0.05) // Variance check for animated reflections!
         ) {
             history_normal                 = hit_normal;
             float hit_history_depth        = FFX_DNSR_Reflections_SampleDepthHistory(hit_reprojection_uv);
             float hit_history_linear_depth = FFX_DNSR_Reflections_GetLinearDepth(hit_reprojection_uv, hit_history_depth);
-            history_linear_depth           = hit_history_linear_depth;
+            // Hack: The depth at hit_reprojection_uv is different from the depth at the current uv because they are different points on the mirror.
+            // If we use hit_history_linear_depth, GetDisocclusionFactor will reject the history, destroying temporal accumulation for reflections!
+            // By forcing history_linear_depth = linear_depth, we bypass the depth rejection and allow perfectly tracked reflections to accumulate.
+            history_linear_depth           = linear_depth;
             reprojection_uv                = hit_reprojection_uv;
             reprojection                   = hit_history;
         } else {
-            // Reject surface reprojection based on simple distance
-            if (dot2(surface_history - local_neighborhood.mean) <
-                FFX_DNSR_REFLECTIONS_REPROJECT_SURFACE_DISCARD_VARIANCE_WEIGHT * length(local_neighborhood.variance)) {
+            // Accept surface reprojection if history is starting OR if variance check passes
+            if (history_num_samples < 0.5 || dot2(surface_history - local_neighborhood.mean) < FFX_DNSR_REFLECTIONS_REPROJECT_SURFACE_DISCARD_VARIANCE_WEIGHT * max(length(local_neighborhood.variance), 0.05)) {
                 history_normal                     = surface_normal;
                 float surface_history_depth        = FFX_DNSR_Reflections_SampleDepthHistory(surface_reprojection_uv);
                 float surface_history_linear_depth = FFX_DNSR_Reflections_GetLinearDepth(surface_reprojection_uv, surface_history_depth);
                 history_linear_depth               = surface_history_linear_depth;
                 reprojection_uv                    = surface_reprojection_uv;
-                reprojection                       = surface_history;
+                reprojection                       = (history_num_samples < 0.5) ? local_neighborhood.mean : surface_history;
             } else {
                 disocclusion_factor = 0.0;
                 return;
             }
         }
     }
-    float depth        = FFX_DNSR_Reflections_LoadDepth(dispatch_thread_id);
-    float linear_depth = FFX_DNSR_Reflections_GetLinearDepth(uv, depth);
     // Determine disocclusion factor based on history
     disocclusion_factor = FFX_DNSR_Reflections_GetDisocclusionFactor(normal, history_normal, linear_depth, history_linear_depth);
 
@@ -310,7 +318,7 @@ void FFX_DNSR_Reflections_Reproject(int2 dispatch_thread_id, int2 group_thread_i
             num_samples              = min(s_max_samples, num_samples + 1);
             min16float new_variance  = FFX_DNSR_Reflections_ComputeTemporalVariance(radiance.xyz, reprojection.xyz);
             if (disocclusion_factor < FFX_DNSR_REFLECTIONS_DISOCCLUSION_THRESHOLD) {
-                FFX_DNSR_Reflections_StoreRadianceReprojected(dispatch_thread_id, (0.0).xxx);
+                FFX_DNSR_Reflections_StoreRadianceReprojected(dispatch_thread_id, radiance);
                 FFX_DNSR_Reflections_StoreVariance(dispatch_thread_id, 1.0);
                 FFX_DNSR_Reflections_StoreNumSamples(dispatch_thread_id, 1.0);
             } else {
@@ -322,7 +330,7 @@ void FFX_DNSR_Reflections_Reproject(int2 dispatch_thread_id, int2 group_thread_i
                 radiance = lerp(radiance, reprojection, 0.3);
             }
         } else {
-            FFX_DNSR_Reflections_StoreRadianceReprojected(dispatch_thread_id, (0.0).xxx);
+            FFX_DNSR_Reflections_StoreRadianceReprojected(dispatch_thread_id, radiance);
             FFX_DNSR_Reflections_StoreVariance(dispatch_thread_id, 1.0);
             FFX_DNSR_Reflections_StoreNumSamples(dispatch_thread_id, 1.0);
         }

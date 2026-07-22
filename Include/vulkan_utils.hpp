@@ -267,4 +267,33 @@ namespace VulkanUtils {
     [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code, const vk::raii::Device &device);
 
     std::vector<char> readFile(const std::string& filename);
+
+    struct HDRImageData {
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        std::vector<float> pixels; // Données float 32 bits (RGBA)
+    };
+
+    struct HDRTexture {
+        vk::raii::Image image = nullptr;
+        vk::raii::DeviceMemory imageMemory = nullptr;
+        vk::raii::ImageView imageView = nullptr;
+        vk::raii::Sampler sampler = nullptr;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+
+    // Charge les données brutes CPU d'un fichier .hdr (RGBA float 32 bits)
+    HDRImageData loadHDRData(const std::string& filepath);
+
+    // Charge un fichier .hdr et crée directement la texture Vulkan (GPU Image + Memory + ImageView)
+    HDRTexture loadHDRTexture(
+        const vk::raii::Device& device,
+        const vk::raii::PhysicalDevice& physicalDevice,
+        const vk::raii::CommandPool& commandPool,
+        const vk::raii::Queue& graphicsQueue,
+        const std::string& filepath,
+        vk::Format format = vk::Format::eR32G32B32A32Sfloat);
 }
+

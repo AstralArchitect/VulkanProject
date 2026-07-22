@@ -3,10 +3,87 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Core/Factory.h>
+#include <Jolt/Core/JobSystemThreadPool.h>
+#include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Body/Body.h>
+#include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
 
 // JoltPhysicsWorld owns its JPH::PhysicsSystem (does not take a pointer to one).
 // Call PhysicsWorld::create() rather than constructing this directly.
+
+namespace Layers {
+    static constexpr JPH::ObjectLayer NON_MOVING = 0;
+    static constexpr JPH::ObjectLayer MOVING = 1;
+    static constexpr JPH::ObjectLayer NUM_LAYERS = 2;
+};
+
+namespace BroadPhaseLayers {
+    static constexpr JPH::BroadPhaseLayer NON_MOVING(0);
+    static constexpr JPH::BroadPhaseLayer MOVING(1);
+    static constexpr uint32_t NUM_LAYERS(2);
+};
+
+class BPLayerInterfaceImpl final : public JPH::BroadPhaseLayerInterface {
+public:
+    BPLayerInterfaceImpl() {
+        mObjectToBroadPhase[Layers::NON_MOVING] = BroadPhaseLayers::NON_MOVING;
+        mObjectToBroadPhase[Layers::MOVING]     = BroadPhaseLayers::MOVING;
+    }
+    uint32_t GetNumBroadPhaseLayers() const override {
+        return BroadPhaseLayers::NUM_LAYERS;
+    }
+    JPH::BroadPhaseLayer GetBroadPhaseLayer(JPH::ObjectLayer inLayer) const override {
+        JPH_ASSERT(inLayer < Layers::NUM_LAYERS);
+        return mObjectToBroadPhase[inLayer];
+    }
+#if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
+    const char *GetBroadPhaseLayerName(JPH::BroadPhaseLayer inLayer) const override {
+        switch ((JPH::BroadPhaseLayer::Type)inLayer) {
+            case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::NON_MOVING: return "NON_MOVING";
+            case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::MOVING:     return "MOVING";
+            default:                                                       JPH_ASSERT(false); return "INVALID";
+        }
+    }
+#endif // JPH_EXTERNAL_PROFILE || JPH_PROFILE_ENABLED
+private:
+    JPH::BroadPhaseLayer mObjectToBroadPhase[Layers::NUM_LAYERS];
+};
+
+class ObjVsBPFilter final : public JPH::ObjectVsBroadPhaseLayerFilter {
+public:
+    bool ShouldCollide(JPH::ObjectLayer inLayer1, JPH::BroadPhaseLayer inLayer2) const override {
+        switch (inLayer1) {
+            case Layers::NON_MOVING:
+                return inLayer2 == BroadPhaseLayers::MOVING;
+            case Layers::MOVING:
+                return true;
+            default:
+                JPH_ASSERT(false);
+                return false;
+        }
+    }
+};
+
+class ObjVsObjFilter final : public JPH::ObjectLayerPairFilter {
+public:
+    bool ShouldCollide(JPH::ObjectLayer inObject1, JPH::ObjectLayer inObject2) const override {
+        switch (inObject1) {
+            case Layers::NON_MOVING:
+                return inObject2 == Layers::MOVING; // Non moving only collides with moving
+            case Layers::MOVING:
+                return true; // Moving collides with everything
+            default:
+                JPH_ASSERT(false);
+                return false;
+        }
+    }
+};
+
 class JoltPhysicsWorld final : public PhysicsWorld {
 public:
     explicit JoltPhysicsWorld(
@@ -59,9 +136,8 @@ public:
     }
 
     PhysicsPose get_body_pose(JPH::BodyID id) const override {
-        JPH::RVec3 pos;
-        JPH::Quat  rot;
-        body_interface_->GetPositionAndRotation(id, pos, rot);
+        JPH::RVec3 pos = body_interface_->GetPosition(id);
+        JPH::Quat  rot = body_interface_->GetRotation(id);
         return {
             glm::vec3(pos.GetX(), pos.GetY(), pos.GetZ()),
             glm::quat(rot.GetW(), rot.GetX(), rot.GetY(), rot.GetZ()),
@@ -129,17 +205,23 @@ public:
             out_distance = result.mFraction * max_distance;
             out_body_id  = result.mBodyID;
             JPH::BodyLockRead lock(system_.GetBodyLockInterface(), out_body_id);
-            out_normal = lock.Succeeded()
-                ? glm::vec3(lock.GetBody().GetWorldSpaceSurfaceNormal(
-                      result.mSubShapeID2, ray.GetPointOnRay(result.mFraction)).GetX(),
-                      lock.GetBody().GetWorldSpaceSurfaceNormal(
-                      result.mSubShapeID2, ray.GetPointOnRay(result.mFraction)).GetY(),
-                      lock.GetBody().GetWorldSpaceSurfaceNormal(
-                      result.mSubShapeID2, ray.GetPointOnRay(result.mFraction)).GetZ())
-                : glm::vec3(0, 1, 0);
+            if (lock.Succeeded()) {
+                JPH::Vec3 normal = lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, ray.GetPointOnRay(result.mFraction));
+                out_normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
+            } else {
+                out_normal = glm::vec3(0, 1, 0);
+            }
             return true;
         }
         return false;
+    }
+
+    void add_force(JPH::BodyID id, const glm::vec3& f) override {
+        body_interface_->AddForce(id, JPH::Vec3(f.x, f.y, f.z));
+    }
+
+    void add_impulse(JPH::BodyID id, const glm::vec3& imp) override {
+        body_interface_->AddImpulse(id, JPH::Vec3(imp.x, imp.y, imp.z));
     }
 
 private:
