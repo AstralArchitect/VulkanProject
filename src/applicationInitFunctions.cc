@@ -72,7 +72,7 @@ void VulkanApp::processInput(GLFWwindow *window)
     static bool isFullscreen = false;
     static int windowedWidth, windowedHeight, windowedPosX, windowedPosY;
     static glm::vec3 previousBallPos = glm::vec3(1.f);
-    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[2].physicsBodyId).position;
+    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId).position;
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
@@ -81,45 +81,59 @@ void VulkanApp::processInput(GLFWwindow *window)
     {
         glm::vec3 mVec = ballPos - previousBallPos;
         mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
+        mVec.y = 0.f;
         
         mVec = glm::mat3(glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0.f, 1.f, 0.f))) * mVec;
 
-        mVec *= 1000;
+        mVec *= 200;
 
-        physicsWorld->add_force(physicsEntities[2].physicsBodyId, mVec);
+        physicsWorld->add_force(physicsEntities[1].physicsBodyId, mVec);
     }
     else if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
     {
         glm::vec3 mVec = ballPos - previousBallPos;
         mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
+        mVec.y = 0.f;
 
         mVec = glm::mat3(glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0.f, -1.f, 0.f))) * mVec;
 
-        mVec *= 1000;
+        mVec *= 200;
 
-        physicsWorld->add_force(physicsEntities[2].physicsBodyId, mVec);
+        physicsWorld->add_force(physicsEntities[1].physicsBodyId, mVec);
     }
     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
     {
         glm::vec3 mVec = ballPos - previousBallPos;
         mVec = glm::normalize(mVec);
         mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+        mVec.y = 0.f;
 
-        mVec *= 1000;
+        mVec *= 200;
 
-        physicsWorld->add_force(physicsEntities[2].physicsBodyId, mVec);
+        physicsWorld->add_force(physicsEntities[1].physicsBodyId, mVec);
     }
     else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
     {
         glm::vec3 mVec = ballPos - previousBallPos;
         mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
+        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
+        mVec.y = 0.f;
+        
+        mVec *= 200;
 
-        mVec *= 1000;
+        physicsWorld->add_force(physicsEntities[1].physicsBodyId, -mVec);
+    }
+    else if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
+    {
+        PhysicsPose initialPose;
+        initialPose.position = glm::vec3(0.0f, 1.0f, 0.0f);
+        initialPose.orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, initialPose);
+        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(0.0f));
 
-        physicsWorld->add_force(physicsEntities[2].physicsBodyId, -mVec);
+        ballPos = initialPose.position;
     }
     previousBallPos = ballPos;
 
@@ -142,10 +156,7 @@ void VulkanApp::processInput(GLFWwindow *window)
     }
 }
 
-// Point cible de la scène autour duquel tourner (ex: le centre de votre scène)
-glm::vec3 target = glm::vec3(0.0f, 1.0f, 0.0f);
-
-// Mouse callback
+// Mouse callback (Logique FPV / First Person View)
 void VulkanApp::mouse(double xposIn, double yposIn) {
     static double lastX = WIDTH / 2.0;
     static double lastY = HEIGHT / 2.0;
@@ -163,14 +174,7 @@ void VulkanApp::mouse(double xposIn, double yposIn) {
     lastX = xposIn;
     lastY = yposIn;
 
-    // 1. Conserver la distance actuelle par rapport au point cible
-    float radius = glm::distance(camera.Position, target);
-
-    // 2. Mettre à jour les angles Yaw et Pitch ainsi que le vecteur Front de la caméra
     camera.ProcessMouseMovement(xoffset, yoffset);
-
-    // 3. Recalculer la position de la caméra pour orbiter autour du point cible
-    camera.Position = target - camera.Front * radius;
 }
 
 
@@ -611,6 +615,7 @@ void VulkanApp::createGraphicsPipeline()
         *descriptorSetLayout,                    // Set 0 (Caméra)
         *textureManager.getDescriptorSetLayout() // Set 1 (Textures)
     };
+    
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
         .setLayoutCount = static_cast<uint32_t>(layouts.size()),
         .pSetLayouts = layouts.data(),
@@ -1013,7 +1018,7 @@ void VulkanApp::createCompositionResources()
     compositionPipelineLayout = nullptr;
     compositionDescriptorSetLayout = nullptr;
 
-    std::array<vk::DescriptorSetLayoutBinding, 5> bindings = {
+    std::array<vk::DescriptorSetLayoutBinding, 6> bindings = {
         vk::DescriptorSetLayoutBinding{
             .binding = 0,
             .descriptorType = vk::DescriptorType::eSampledImage,
@@ -1037,6 +1042,11 @@ void VulkanApp::createCompositionResources()
         vk::DescriptorSetLayoutBinding{
             .binding = 4,
             .descriptorType = vk::DescriptorType::eStorageImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        vk::DescriptorSetLayoutBinding{
+            .binding = 5,
+            .descriptorType = vk::DescriptorType::eSampledImage,
             .descriptorCount = 1,
             .stageFlags = vk::ShaderStageFlagBits::eCompute}};
 
@@ -1063,7 +1073,7 @@ void VulkanApp::createCompositionResources()
     std::array<vk::DescriptorPoolSize, 2> poolSizes = {
         vk::DescriptorPoolSize{
             .type = vk::DescriptorType::eSampledImage,
-            .descriptorCount = swapChainImageCount * 4},
+            .descriptorCount = swapChainImageCount * 5},
         vk::DescriptorPoolSize{
             .type = vk::DescriptorType::eStorageImage,
             .descriptorCount = swapChainImageCount * 1}};
@@ -1080,10 +1090,6 @@ void VulkanApp::createCompositionResources()
         .descriptorSetCount = swapChainImageCount,
         .pSetLayouts = layouts.data()};
     compositionDescriptorSets = vk::raii::DescriptorSets(device, allocInfo);
-}
-
-void VulkanApp::createBackgroundTexture() {
-    backgroundTexture = VulkanUtils::loadHDRTexture(device, physicalDevice, commandPool, graphicsQueue, "res/textures/background2.hdr");
 }
 
 void VulkanApp::createDescriptorPool()

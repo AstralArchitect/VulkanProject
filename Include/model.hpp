@@ -28,6 +28,7 @@ import vulkan_hpp;
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
 
 class TextureManager;
 
@@ -37,7 +38,7 @@ public:
     GltfMaterial() = default;
     ~GltfMaterial() = default;
 
-    void bind(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, glm::mat4 modelMatrix) const;
+    void bind(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, glm::mat4 modelMatrix, glm::mat4 prevModelMatrix) const;
 
 private:
     uint8_t features; // Bitfield for features for this material
@@ -65,7 +66,7 @@ class GltfPrimitive {
 public:
     GltfPrimitive(const tinygltf::Model& root, uint32_t primfirstIndex, uint32_t primIndexCount, uint32_t primVertexCount, vk::DeviceSize primByteOffset, tinygltf::Material material, bool hasNormals, vk::VertexInputBindingDescription2EXT binding, std::vector<vk::VertexInputAttributeDescription2EXT> attributes, TextureManager& textureManager, const std::string& modelPath);
 
-    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, vk::raii::Buffer& globalVertexBuffer, glm::mat4 modelMatrix) const;
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, vk::raii::Buffer& globalVertexBuffer, glm::mat4 modelMatrix, glm::mat4 prevModelMatrix) const;
 
     uint32_t getFirstIndex() const { return firstIndex; }
     uint32_t getIndexCount() const { return indexCount; }
@@ -110,9 +111,9 @@ public:
         primitives.push_back(std::move(primitive));
     }
     
-    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, vk::raii::Buffer& globalVertexBuffer, glm::mat4 modelMatrix) const {
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, vk::raii::Buffer& globalVertexBuffer, glm::mat4 modelMatrix, glm::mat4 prevModelMatrix) const {
         for (auto& primitive : primitives) {
-            primitive.draw(commandBuffer, pipelineLayout, globalVertexBuffer, modelMatrix);
+            primitive.draw(commandBuffer, pipelineLayout, globalVertexBuffer, modelMatrix, prevModelMatrix);
         }
     }
 
@@ -145,16 +146,16 @@ public:
     // Constructeur simple sans Vulkan
     GltfNode(GltfModel& model, tinygltf::Model& root, tinygltf::Node node, glm::mat4 parent_node_transform);
 
-    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, glm::mat4 parentMatrix, vk::raii::Buffer& globalVertexBuffer) const {
+    void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout, glm::mat4 parentMatrix, glm::mat4 prevParentMatrix, vk::raii::Buffer& globalVertexBuffer) const {
+        glm::mat4 prevGlobalTransform = prevParentMatrix * node_transform;
         glm::mat4 globalTransform = parentMatrix * node_transform;
 
         if (mesh) {
-            // Exemple : Envoi de la matrice finale via Push Constants avant de draw le mesh
-            mesh->draw(commandBuffer, pipelineLayout, globalVertexBuffer, globalTransform);
+            mesh->draw(commandBuffer, pipelineLayout, globalVertexBuffer, globalTransform, prevGlobalTransform);
         }
 
         for (auto& child : children) {
-            child.draw(commandBuffer, pipelineLayout, globalTransform, globalVertexBuffer);
+            child.draw(commandBuffer, pipelineLayout, globalTransform, prevGlobalTransform, globalVertexBuffer);
         }
     }
 
@@ -183,6 +184,7 @@ public:
     }
 
     void collectPhysicsVertices(const std::vector<unsigned char>& globalVertexData, JPH::Array<JPH::Vec3>& outPositions, glm::mat4 parentMatrix) const;
+    void collectPhysicsMeshData(const std::vector<unsigned char>& globalVertexData, const std::vector<uint32_t>& globalIndices, JPH::VertexList& outVertices, JPH::IndexedTriangleList& outTriangles, glm::mat4 parentMatrix) const;
 
 private:
     const GltfMesh* mesh;
@@ -200,16 +202,13 @@ public:
     ~GltfModel() = default;
 
     JPH::ShapeSettings* getConvexHull() const;
+    JPH::ShapeSettings* getMeshShape() const;
 
-    // Ajout du pipelineLayout pour mettre à jour les transformations des nodes lors du dessin
     void draw(vk::raii::CommandBuffer& commandBuffer, vk::raii::PipelineLayout& pipelineLayout) {
-        // 1. Bind des buffers globaux UNE SEULE FOIS pour tout le modèle
-        // commandBuffer.bindVertexBuffers(0, {*globalVertexBuffer}, {0}); // Supprimé, géré par primitive
         commandBuffer.bindIndexBuffer(*globalIndexBuffer, 0, vk::IndexType::eUint32);
 
-        // 3. On lance le dessin récursif sur les nœuds racines (root nodes)
         for (auto& node : rootNodes) {
-            node.draw(commandBuffer, pipelineLayout, modelTransform * staticTransform, globalVertexBuffer);
+            node.draw(commandBuffer, pipelineLayout, modelTransform * staticTransform, previousModelTransform * staticTransform, globalVertexBuffer);
         }
     }
 
@@ -244,7 +243,10 @@ public:
         return count;
     }
 
-    glm::mat4 modelTransform = glm::mat4(1.f);
+    void setModelTransform(glm::mat4 newModelTransform) {
+        previousModelTransform = modelTransform;
+        modelTransform = newModelTransform;
+    }
 
     void setStaticTransform(glm::mat4 transform) {
         if (staticTransform != glm::mat4(1.f)) throw std::runtime_error("Cannot modify static transform twice");
@@ -273,6 +275,9 @@ private:
     vk::raii::PhysicalDevice *physicalDevice = nullptr;
     vk::raii::CommandPool *commandPool = nullptr;
     vk::raii::Queue *graphicsQueue = nullptr;
+
+    glm::mat4 modelTransform = glm::mat4(1.f);
+    glm::mat4 previousModelTransform = glm::mat4(1.f);
 
     // Méthodes internes de génération
     void createVertexBuffer();

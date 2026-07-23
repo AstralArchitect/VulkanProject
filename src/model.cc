@@ -64,9 +64,10 @@ GltfMaterial::GltfMaterial(const tinygltf::Model &root, tinygltf::Material mater
     }
 }
 
-void GltfMaterial::bind(vk::raii::CommandBuffer &commandBuffer, vk::raii::PipelineLayout &pipelineLayout, glm::mat4 modelMatrix) const
+void GltfMaterial::bind(vk::raii::CommandBuffer &commandBuffer, vk::raii::PipelineLayout &pipelineLayout, glm::mat4 modelMatrix, glm::mat4 prevModelMatrix) const
 {
     MeshPushConstants pushConstants;
+    pushConstants.prevModel = prevModelMatrix;
     pushConstants.modelMatrix = modelMatrix;
     pushConstants.albedoTextureIndex = baseColorTextureIndex.value_or(0); // Default to 0 if no texture
     pushConstants.rmTextureIndex = metallicRoughnessTextureIndex.value_or(0);
@@ -87,13 +88,13 @@ void GltfMaterial::bind(vk::raii::CommandBuffer &commandBuffer, vk::raii::Pipeli
     commandBuffer.pushConstants(pipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MeshPushConstants), &pushConstants);
 }
 
-void GltfPrimitive::draw(vk::raii::CommandBuffer &commandBuffer, vk::raii::PipelineLayout &pipelineLayout, vk::raii::Buffer &globalVertexBuffer, glm::mat4 modelMatrix) const
+void GltfPrimitive::draw(vk::raii::CommandBuffer &commandBuffer, vk::raii::PipelineLayout &pipelineLayout, vk::raii::Buffer &globalVertexBuffer, glm::mat4 modelMatrix, glm::mat4 prevModelMatrix) const
 {
     commandBuffer.setVertexInputEXT(vertexBindingDescription, vertexAttributeDescriptions);
 
     commandBuffer.bindVertexBuffers(0, {globalVertexBuffer}, {byteOffset});
 
-    material.bind(commandBuffer, pipelineLayout, modelMatrix);
+    material.bind(commandBuffer, pipelineLayout, modelMatrix, prevModelMatrix);
 
     commandBuffer.drawIndexed(indexCount, 1, firstIndex, 0, 0);
 }
@@ -612,6 +613,47 @@ void GltfNode::collectPhysicsVertices(const std::vector<unsigned char>& globalVe
     }
 }
 
+void GltfNode::collectPhysicsMeshData(
+    const std::vector<unsigned char>& globalVertexData,
+    const std::vector<uint32_t>& globalIndices,
+    JPH::VertexList& outVertices,
+    JPH::IndexedTriangleList& outTriangles,
+    glm::mat4 parentMatrix) const
+{
+    glm::mat4 globalTransform = parentMatrix * node_transform;
+
+    if (mesh) {
+        for (const auto& primitive : mesh->getPrimitives()) {
+            uint32_t baseVertexIndex = static_cast<uint32_t>(outVertices.size());
+
+            size_t vertexCount = primitive.getVertexCount();
+            size_t stride = primitive.getStride();
+            size_t byteOffset = primitive.getByteOffset();
+
+            for (size_t i = 0; i < vertexCount; i++) {
+                const float* pos = reinterpret_cast<const float*>(&globalVertexData[byteOffset + i * stride]);
+                glm::vec4 worldPos = globalTransform * glm::vec4(pos[0], pos[1], pos[2], 1.0f);
+                outVertices.push_back(JPH::Float3(worldPos.x, worldPos.y, worldPos.z));
+            }
+
+            uint32_t firstIndex = primitive.getFirstIndex();
+            uint32_t indexCount = primitive.getIndexCount();
+
+            for (uint32_t i = 0; i < indexCount; i += 3) {
+                uint32_t idx0 = baseVertexIndex + globalIndices[firstIndex + i + 0];
+                uint32_t idx1 = baseVertexIndex + globalIndices[firstIndex + i + 1];
+                uint32_t idx2 = baseVertexIndex + globalIndices[firstIndex + i + 2];
+
+                outTriangles.push_back(JPH::IndexedTriangle(idx0, idx1, idx2));
+            }
+        }
+    }
+
+    for (const auto& child : children) {
+        child.collectPhysicsMeshData(globalVertexData, globalIndices, outVertices, outTriangles, globalTransform);
+    }
+}
+
 JPH::ShapeSettings* GltfModel::getConvexHull() const {
     JPH::Array<JPH::Vec3> positions;
 
@@ -626,4 +668,19 @@ JPH::ShapeSettings* GltfModel::getConvexHull() const {
 
     // Jolt se charge de calculer l'enveloppe convexe optimale
     return new JPH::ConvexHullShapeSettings(positions);
+}
+
+JPH::ShapeSettings* GltfModel::getMeshShape() const {
+    JPH::VertexList vertices;
+    JPH::IndexedTriangleList triangles;
+
+    for (const auto& rootNode : rootNodes) {
+        rootNode.collectPhysicsMeshData(globalVertexData, indices, vertices, triangles, staticTransform);
+    }
+
+    if (vertices.empty() || triangles.empty()) {
+        throw std::runtime_error("Aucun sommet ou triangle trouvé pour générer le MeshShape !");
+    }
+
+    return new JPH::MeshShapeSettings(vertices, triangles);
 }

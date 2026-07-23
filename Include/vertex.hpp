@@ -12,6 +12,7 @@ struct UniformBufferObject
 
 struct MeshPushConstants {
     glm::mat4 modelMatrix;
+    glm::mat4 prevModel;
     uint32_t albedoTextureIndex;
     uint32_t rmTextureIndex;
     alignas(16) glm::vec4 baseColor;

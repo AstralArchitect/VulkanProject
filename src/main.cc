@@ -1,3 +1,5 @@
+#include "glm/ext/matrix_transform.hpp"
+#include "glm/geometric.hpp"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <tiny_gltf.h>
 #define TINYGLTF
@@ -11,6 +13,8 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
+
+char followingmode = 0;
 
 void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 {
@@ -174,7 +178,7 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
     for (auto &entity : physicsEntities)
     {
         glm::mat4 objectMatrix = physicsWorld->get_body_pose(entity.physicsBodyId).to_matrix();
-        entity.graphicModel->modelTransform = objectMatrix;
+        entity.graphicModel->setModelTransform(objectMatrix);
     }
 
     for (auto &model : models)
@@ -259,8 +263,11 @@ void VulkanApp::updateCompositionDescriptorSet(uint32_t imageIndex, uint32_t fra
     vk::DescriptorImageInfo outputImageInfo{
         .imageView = *swapChainImageViews[imageIndex],
         .imageLayout = vk::ImageLayout::eGeneral};
+    vk::DescriptorImageInfo roughnessInfo{
+        .imageView = *renderImagesView[2],
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
 
-    std::array<vk::WriteDescriptorSet, 5> descriptorWrites = {
+    std::array<vk::WriteDescriptorSet, 6> descriptorWrites = {
         vk::WriteDescriptorSet{
             .dstSet = *compositionDescriptorSets[imageIndex],
             .dstBinding = 0,
@@ -290,7 +297,13 @@ void VulkanApp::updateCompositionDescriptorSet(uint32_t imageIndex, uint32_t fra
             .dstBinding = 4,
             .descriptorCount = 1,
             .descriptorType = vk::DescriptorType::eStorageImage,
-            .pImageInfo = &outputImageInfo}};
+            .pImageInfo = &outputImageInfo},
+        vk::WriteDescriptorSet{
+            .dstSet = *compositionDescriptorSets[imageIndex],
+            .dstBinding = 5,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .pImageInfo = &roughnessInfo}};
 
     device.updateDescriptorSets(descriptorWrites, nullptr);
 }
@@ -302,34 +315,66 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     static glm::vec3 previousCamPoses[3] = {glm::vec3(1.f), glm::vec3(1.f), glm::vec3(1.f)};
     static glm::vec3 previousBallPos = glm::vec3(1.f);
 
-    // Get the camera pos from the ball motion vector
-    // Get the normalized ball motion vector
-    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[2].physicsBodyId).position;
-    glm::vec3 mVec = ballPos - previousBallPos;
-    mVec = glm::normalize(mVec);
-    mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
+    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId).position;
+    float distance = glm::distance(glm::vec3(0.f), ballPos);
+    
+    if (distance < 10) followingmode = 0;
+    //else if (distance < 100) followingmode = 1;
+    else followingmode = 2;
 
-    // Calculate the camera position
-    glm::vec3 camPos;
-    camPos = ballPos;
-    camPos += glm::vec3(0.f, 2.f, 0.f);
-    camPos -= mVec * 3.f;
-
-    for (int i = 0; i < 3; i++) {
-        camPos += previousCamPoses[i];
-    }
-    camPos /= 4;
-
-    camera.Position = camPos;
-    camera.lookAt(ballPos);
-
-    previousBallPos = ballPos;
-    for (int i = 2; i >= 0; i--) {
-        if (i == 0) {
-            previousCamPoses[i] = camPos;
-            break;
+    if (followingmode == 0) {
+        camera.Position = glm::vec3(0.0f, 2.f, 0.f);
+        previousBallPos = ballPos;
+        for (int i = 2; i >= 0; i--) {
+            if (i == 0) {
+                previousCamPoses[i] = camera.Position;
+                break;
+            }
+            previousCamPoses[i] = previousCamPoses[i - 1];
         }
-        previousCamPoses[i] = previousCamPoses[i - 1];
+    }
+    else if (followingmode == 1) {
+        camera.Position = glm::vec3(0.0f, 2.f, 0.f);
+        camera.lookAt(ballPos);
+
+        previousBallPos = ballPos;
+        for (int i = 2; i >= 0; i--) {
+            if (i == 0) {
+                previousCamPoses[i] = camera.Position;
+                break;
+            }
+            previousCamPoses[i] = previousCamPoses[i - 1];
+        }
+    } else if (followingmode == 2) {
+        // Get the camera pos from the ball motion vector
+        // Get the normalized ball motion vector
+        glm::vec3 mVec = ballPos - previousBallPos;
+        mVec = glm::normalize(mVec);
+        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
+        mVec.y = 0.f;
+
+        // Calculate the camera position
+        glm::vec3 camPos;
+        camPos = ballPos;
+        camPos += glm::vec3(0.f, 1.f, 0.f);
+        camPos -= mVec * 3.f;
+
+        for (int i = 0; i < 3; i++) {
+            camPos += previousCamPoses[i];
+        }
+        camPos /= 4;
+
+        camera.Position = camPos;
+        camera.lookAt(ballPos);
+
+        previousBallPos = ballPos;
+        for (int i = 2; i >= 0; i--) {
+            if (i == 0) {
+                previousCamPoses[i] = camPos;
+                break;
+            }
+            previousCamPoses[i] = previousCamPoses[i - 1];
+        }
     }
 
     // Camera and projection matrices (shared by all objects)
@@ -337,7 +382,7 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     glm::mat4 proj = glm::perspective(
         glm::radians(45.0f),
         static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height),
-        0.1f, 500.0f);
+        0.1f, 1500.0f);
 
     proj[1][1] *= -1; // Flip Y for Vulkan
 
@@ -441,19 +486,20 @@ void VulkanApp::drawFrame()
 
 void VulkanApp::loadModels()
 {
+    camera.Position = glm::vec3(0.f, 2.f, 0.f);
     models.push_back(std::make_unique<GltfModel>(
-        "res/models/plan.glb",
+        "res/models/world.glb",
         device,
         physicalDevice,
         commandPool,
         graphicsQueue,
         textureManager));
 
-    models.back()->setStaticTransform(glm::scale_slow(glm::mat4(1.f), glm::vec3(100.f)));
+    models.back()->setStaticTransform(glm::scale_slow(glm::mat4(1.f), glm::vec3(10.f)));
 
     JPH::BodyCreationSettings floorSettings(
-        models.back()->getConvexHull(), 
-        JPH::RVec3(0.0f, -4.0f, 0.0f),
+        models.back()->getMeshShape(), 
+        JPH::RVec3(0.0f, -10.0f, 0.0f),
         JPH::Quat::sIdentity(), 
         JPH::EMotionType::Static, 
         Layers::NON_MOVING
@@ -467,43 +513,23 @@ void VulkanApp::loadModels()
     physicsEntities.push_back(floorEntity);
 
     models.push_back(std::make_unique<GltfModel>(
-        "res/models/tobogan.glb",
-        device,
-        physicalDevice,
-        commandPool,
-        graphicsQueue,
-        textureManager));
-
-    JPH::BodyCreationSettings toboganSettings(
-        models.back()->getConvexHull(),
-        JPH::RVec3(0.f, 1.f, -5.f),
-        JPH::Quat::sIdentity(),
-        JPH::EMotionType::Static,
-        Layers::NON_MOVING
-    );
-    JPH::BodyID toboganBodyId = physicsWorld->create_body(toboganSettings);
-
-    PhysicsEntity toboganEntity;
-    toboganEntity.physicsBodyId = toboganBodyId;
-    toboganEntity.graphicModel = models.back().get();
-
-    physicsEntities.push_back(toboganEntity);
-
-    models.push_back(std::make_unique<GltfModel>(
         "res/models/sphere.glb",
         device,
         physicalDevice,
         commandPool,
         graphicsQueue,
         textureManager));
+    
+    models.back()->setStaticTransform(glm::scale(glm::mat4(1.f), glm::vec3(.25f)));
 
     JPH::BodyCreationSettings sphereSettings(
         models.back()->getConvexHull(),
-        JPH::RVec3(0.f, 10.f, 0.f),
+        JPH::RVec3(0.f, 1.f, 0.f),
         JPH::Quat::sIdentity(),
         JPH::EMotionType::Dynamic,
         Layers::MOVING
     );
+    sphereSettings.mMotionQuality = JPH::EMotionQuality::LinearCast;
     JPH::BodyID sphereBodyId = physicsWorld->create_body(sphereSettings);
 
     PhysicsEntity sphereEntity;
@@ -511,6 +537,10 @@ void VulkanApp::loadModels()
     sphereEntity.graphicModel = models.back().get();
 
     physicsEntities.push_back(sphereEntity);
+}
+
+void VulkanApp::createBackgroundTexture() {
+    backgroundTexture = VulkanUtils::loadHDRTexture(device, physicalDevice, commandPool, graphicsQueue, "res/textures/background.hdr");
 }
 
 void VulkanApp::mainLoop()

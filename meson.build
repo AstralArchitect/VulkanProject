@@ -28,7 +28,8 @@ cpp_sources = [
     cpp_dir + 'text_manager.cc',
     cpp_dir + 'camera.cpp',
     cpp_dir + 'ffx-mgr.cc',
-    cpp_dir + 'jolt_physics.cc'
+    cpp_dir + 'jolt_physics.cc',
+    cpp_dir + 'bones.cc'
 ]
 
 sources = cpp_sources
@@ -37,35 +38,9 @@ vulkan_dep = dependency('vulkan')
 glfw_dep = dependency('glfw3')
 glm_dep = dependency('glm')
 
-cmake = import('cmake')
-opt_var = cmake.subproject_options()
-opt_var.add_cmake_defines({
-    'TINYGLTF_BUILD_LOADER_EXAMPLE': false,
-    'TINYGLTF_HEADER_ONLY': false,
-    'TINYGLTF_INSTALL': false
-})
+tinygltf_dep = dependency('tinygltf')
 
-tinygltf = cmake.subproject('tinygltf', options: opt_var)
-tinygltf_dep = tinygltf.dependency('tinygltf')
-
-jolt_options = cmake.subproject_options()
-
-jolt_options.add_cmake_defines({
-    'TARGET_UNIT_TESTS': 'OFF',
-    'TARGET_HELLO_WORLD': 'OFF',
-    'TARGET_PERFORMANCE_TEST': 'OFF',
-    'TARGET_SAMPLES': 'OFF',
-    'TARGET_VIEWER': 'OFF',
-    'USE_STATIC_MSVC_RUNTIME_LIBRARY': 'OFF',
-    'ENABLE_PROFILER': 'OFF',
-    'ENABLE_DEBUG_RENDERER': 'OFF',
-    'ENABLE_FLOATING_POINT_EXCEPTIONS': 'OFF'
-    # 'USE_DOUBLE_PRECISION': 'ON'
-})
-
-jolt_subproj = cmake.subproject('jolt', options: jolt_options)
-
-jolt_dep = jolt_subproj.dependency('Jolt')
+jolt_dep = dependency('Jolt')
 
 include_dir = include_directories('Include')
 
@@ -116,7 +91,7 @@ custom_target(
 
 custom_target(
     'compile_slang_composition',
-    input: 'res/shaders/composition.slang',
+    input: 'res/shaders/compute/composition.slang',
     output: 'composition.spv',
     command: [
         slangc,

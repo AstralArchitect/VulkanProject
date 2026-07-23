@@ -43,6 +43,7 @@ struct InstanceData {
 
 struct ModelPushConstants {
     float4x4 model;
+    float4x4 prevModel;
     uint albedoTextureIndex;
     uint rmTextureIndex;
     float4 baseColor;
@@ -484,9 +485,9 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
     }
     
     // Motion vector calculation
-    float4 prevClipPos = mul(camera.prevViewProj, float4(P, 1.0));
+    float4 prevClipPos = mul(camera.prevViewProj, mul(push.prevModel, float4(P, 1.0)));
     float2 prevNDC = prevClipPos.xy / prevClipPos.w;
-    float4 currClipPos = mul(camera.proj, mul(camera.view, float4(P, 1.0)));
+    float4 currClipPos = mul(camera.proj, mul(camera.view, mul(push.model, float4(P, 1.0))));
     float2 currNDC = currClipPos.xy / currClipPos.w;
     
     // Convert NDC to UV (Vulkan: invert Y via -0.5)

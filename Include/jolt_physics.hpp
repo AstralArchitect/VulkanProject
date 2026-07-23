@@ -193,7 +193,7 @@ public:
     }
 
     void step(float delta_seconds) override {
-        system_.Update(delta_seconds, 1, temp_allocator_.get(), job_system_.get());
+        system_.Update(delta_seconds, 2, temp_allocator_.get(), job_system_.get());
     }
 
     bool raycast(const glm::vec3& origin, const glm::vec3& direction, float max_distance,
