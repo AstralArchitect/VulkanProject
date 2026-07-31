@@ -10,6 +10,14 @@ struct UniformBufferObject
     glm::mat4 proj;
 };
 
+struct Vertex {
+    glm::vec4 pos;       // xyz + padding
+    glm::vec4 normal;    // xyz + padding
+    glm::vec4 uv;        // xy + padding
+    glm::uvec4 joints;
+    glm::vec4 weights;
+};
+
 struct MeshPushConstants {
     glm::mat4 modelMatrix;
     glm::mat4 prevModel;

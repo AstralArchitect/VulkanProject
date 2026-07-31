@@ -1,17 +1,17 @@
-#include "bones.hh"
+#include "skin.hh"
 #include "vulkan/vulkan_raii.hpp"
 #include "vulkan_utils.hpp"
 #include <array>
 #include <cstddef>
 
-BonesMgr::BonesMgr(vk::raii::Device &device, vk::raii::PhysicalDevice &physicalDevice) {
+SkinMgr::SkinMgr(vk::raii::Device &device, vk::raii::PhysicalDevice &physicalDevice) {
     // Load the compiled .spv file
-    auto shaderCode = VulkanUtils::readFile("shaders/skinning.spv");
+    auto shaderCode = VulkanUtils::readFile("builddir/skinning.spv");
     vk::raii::ShaderModule shaderModule = VulkanUtils::createShaderModule(shaderCode, device);
 
     // 1. Create Descriptor Set Layout
-    // Must match the five bindings declared in skinning.slang.
-    std::array<vk::DescriptorSetLayoutBinding, 5> bindings = {
+    // Must match the three bindings declared in skinning.slang.
+    std::array<vk::DescriptorSetLayoutBinding, 3> bindings = {
         vk::DescriptorSetLayoutBinding{
             .binding = 0,
             .descriptorType = vk::DescriptorType::eStorageBuffer,
@@ -26,23 +26,15 @@ BonesMgr::BonesMgr(vk::raii::Device &device, vk::raii::PhysicalDevice &physicalD
             .binding = 2,
             .descriptorType = vk::DescriptorType::eStorageBuffer,
             .descriptorCount = 1,
-            .stageFlags = vk::ShaderStageFlagBits::eCompute},
-        vk::DescriptorSetLayoutBinding{
-            .binding = 3,
-            .descriptorType = vk::DescriptorType::eStorageBuffer,
-            .descriptorCount = 1,
-            .stageFlags = vk::ShaderStageFlagBits::eCompute},
-        vk::DescriptorSetLayoutBinding{
-            .binding = 4,
-            .descriptorType = vk::DescriptorType::eStorageBuffer,
-            .descriptorCount = 1,
-            .stageFlags = vk::ShaderStageFlagBits::eCompute}};
+            .stageFlags = vk::ShaderStageFlagBits::eCompute}
+    };
 
     vk::DescriptorSetLayoutCreateInfo layoutInfo{.bindingCount = static_cast<uint32_t>(bindings.size()), .pBindings = bindings.data()};
     descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
 
     // 2. Create Pipeline Layout (including push constants)
     vk::PushConstantRange pushRange{};
+    pushRange.stageFlags = vk::ShaderStageFlagBits::eCompute;
     pushRange.offset = 0;
     pushRange.size = sizeof(SkinPushConstants);
 
@@ -69,7 +61,7 @@ BonesMgr::BonesMgr(vk::raii::Device &device, vk::raii::PhysicalDevice &physicalD
     computePipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
 }
 
-void BonesMgr::dispatchSkinning(const vk::raii::CommandBuffer &cmd, const SkinComputeResources &skin) {
+void SkinMgr::dispatchSkinning(const vk::raii::CommandBuffer &cmd, const SkinComputeResources &skin) {
     // Bind the compute pipeline
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *computePipeline);
 
@@ -98,13 +90,13 @@ void BonesMgr::dispatchSkinning(const vk::raii::CommandBuffer &cmd, const SkinCo
     cmd.dispatch(group_count, 1, 1);
 }
 
-void BonesMgr::insertSkinningBarrier(const vk::raii::CommandBuffer &cmd, vk::Buffer outputVertexBuffer) {
+void SkinMgr::insertSkinningBarrier(const vk::raii::CommandBuffer &cmd, vk::Buffer outputVertexBuffer) {
     // Barrière mémoire pour le buffer de sommets de sortie
     vk::BufferMemoryBarrier2 barrier{
         .srcStageMask        = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask       = vk::AccessFlagBits2::eShaderWrite,
-        .dstStageMask        = vk::PipelineStageFlagBits2::eVertexInput | vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
-        .dstAccessMask       = vk::AccessFlagBits2::eVertexAttributeRead | vk::AccessFlagBits2::eShaderRead,
+        .dstStageMask        = vk::PipelineStageFlagBits2::eVertexInput | vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+        .dstAccessMask       = vk::AccessFlagBits2::eVertexAttributeRead | vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eAccelerationStructureReadKHR,
         .srcQueueFamilyIndex = vk::QueueFamilyIgnored,
         .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
         .buffer              = outputVertexBuffer,

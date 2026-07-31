@@ -63,12 +63,14 @@ void main(uint3 threadId : SV_DispatchThreadID)
                 float sampleDepth = inDepth.Load(int3(x, y, 0)).r;
 
                 // Bilateral weights: geometry preservation (normal & depth)
-                // Gentle normal weight (power 6.0) allows smooth blur on curved surfaces like spheres while preserving sharp object edges
-                float normalWeight = pow(max(0.0, dot(centerNormal, sampleNorm)), 6.0);
+                // Relax normal weight for rough surfaces to allow blurring across curves
+                float normalPower = lerp(6.0, 0.1, roughness); 
+                float normalWeight = pow(max(0.0, dot(centerNormal, sampleNorm)), normalPower);
 
                 // Depth weight prevents bleeding across distinct geometry depth edges
                 float depthDiff = abs(centerDepth - sampleDepth);
-                float depthWeight = exp(-depthDiff * 80.0);
+                float depthFactor = lerp(80.0, 5.0, roughness);
+                float depthWeight = exp(-depthDiff * depthFactor);
 
                 float w = spatialWeight * normalWeight * depthWeight;
 

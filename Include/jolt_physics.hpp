@@ -197,11 +197,13 @@ public:
     }
 
     bool raycast(const glm::vec3& origin, const glm::vec3& direction, float max_distance,
-                 float& out_distance, glm::vec3& out_normal, JPH::BodyID& out_body_id) const override {
+                 float& out_distance, glm::vec3& out_normal, JPH::BodyID& out_body_id,
+                 JPH::BodyID ignore_body_id = JPH::BodyID()) const override {
         JPH::RRayCast ray(JPH::RVec3(origin.x, origin.y, origin.z),
                           JPH::Vec3(direction.x, direction.y, direction.z) * max_distance);
         JPH::RayCastResult result;
-        if (system_.GetNarrowPhaseQuery().CastRay(ray, result)) {
+        JPH::IgnoreSingleBodyFilter bodyFilter(ignore_body_id);
+        if (system_.GetNarrowPhaseQuery().CastRay(ray, result, {}, {}, bodyFilter)) {
             out_distance = result.mFraction * max_distance;
             out_body_id  = result.mBodyID;
             JPH::BodyLockRead lock(system_.GetBodyLockInterface(), out_body_id);

@@ -7,6 +7,7 @@ struct VSInput {
 struct VSOutput {
     float4 pos : SV_Position;
     float3 fragPos;
+    float3 prevWorldPos;
     float3 fragNormal;
     float2 fragTexCoord;
 };
@@ -17,6 +18,7 @@ struct CameraUBO {
     float4x4 prevViewProj;
     float4 camPos;
     float time;
+    float4 sunDir;
 };
 
 struct InstanceData {
@@ -64,9 +66,9 @@ VSOutput vertMain(VSInput input) {
     float4 viewPos  = mul(camera.view, worldPos);
     output.pos      = mul(camera.proj, viewPos);
 
-    output.fragPos = mul(push.model, float4(input.inPos, 1.0)).xyz;
-
-    output.fragNormal = mul((float3x3)push.model, input.inNormal);
+    output.fragPos = worldPos.xyz;
+    output.prevWorldPos = mul(push.prevModel, float4(input.inPos, 1.0)).xyz;
+    output.fragNormal = normalize(mul((float3x3)push.model, input.inNormal));
     output.fragTexCoord = input.inTexCoord;
     
     return output;
@@ -78,6 +80,8 @@ static const float quadratic = 0.032f;
 static const float PI = 3.14159265359;
 static const float EPSILON = 0.001f;
 static const float NUM_SAMPLES = 1;
+static const int SHADOW_CONE_SAMPLES = 8;
+static const float SUN_CONE_ANGLE = 0.06f; // ~3.5 degrés d'angle pour le cône solaire (ombres douces)
 
 static const float ENVIRONMENT_INTENSITY = 1;
 
@@ -89,7 +93,12 @@ float calculateAttenuation(float3 pos1, float3 pos2) {
 
 float3 fresnelSchlick(float cosTheta, float3 F0)
 {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
+{
+    return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 float DistributionGGX(float3 N, float3 H, float roughness)
@@ -122,11 +131,13 @@ float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
     return ggx1 * ggx2;
 }
 
-float3 shadow_intensity(float3 P, float3 lightDir, float3 lightPos)
+float3 shadow_intensity(float3 P, float3 N, float3 lightDir, float maxDist)
 {
     float3 lightTransmissionColor = float3(1.0);
-    float3 currentOrigin = P;
-    float maxDist = distance(lightPos, P);
+    // Biais de normale pour éviter la shadow acne (auto-intersection)
+    // On l'augmente un peu pour éviter que le rayon ne percute la surface d'où il part.
+    float bias = 0.1; 
+    float3 currentOrigin = P + N * bias;
     float3 dir = normalize(lightDir);
 
     for (int depth = 0; depth < 8; ++depth)
@@ -134,11 +145,12 @@ float3 shadow_intensity(float3 P, float3 lightDir, float3 lightPos)
         RayDesc shadowRayDesc;
         shadowRayDesc.Origin = currentOrigin;
         shadowRayDesc.Direction = dir;
-        shadowRayDesc.TMin = EPSILON;
+        // TMin plus permissif pour éviter les auto-intersections
+        shadowRayDesc.TMin = 0.1;
         shadowRayDesc.TMax = maxDist;
 
-        RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> sq;
-        let rayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+        RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> sq;
+        let rayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
 
         sq.TraceRayInline(accelerationStructure, rayFlags, 0xFF, shadowRayDesc);
 
@@ -265,25 +277,66 @@ float3 orient_to_world(float3 H_local, float3 N, float3 T, float3 B) {
     return H_local.x * T + H_local.y * B + H_local.z * N;
 }
 
-float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float roughnessFactor, float transmission, float3 emission) {
+float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float roughnessFactor, float transmission, float3 emission, inout uint seed, int numShadowSamples = SHADOW_CONE_SAMPLES) {
     float3 V = normalize(camera.camPos.xyz - P);
 
-    /*float3 Lo = float3(0.0);
-    for (int i = 0; i < 1; ++i)
+    float3 sunDir = normalize(camera.sunDir.xyz); 
+    float3 L = sunDir;
+    float3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0);
+    
+    float3 sunColor = float3(0.0);
+    float3 shadowColor = float3(1.0);
+
+    if (numShadowSamples > 1 && NdotL > 0.001) {
+        float3 accumSunColor = float3(0.0);
+        float3 accumShadow = float3(0.0);
+        
+        float3 T_sun, B_sun;
+        getTangentSpace(sunDir, T_sun, B_sun);
+        
+        // Spirale de Fibonacci rotatée par pixel pour un échantillonnage uniforme et sans bande
+        const float GOLDEN_ANGLE = 2.39996323;
+        float randomRotation = next_rand(seed) * 2.0 * PI;
+        
+        for (int i = 0; i < numShadowSamples; ++i) {
+            float r = sqrt((float(i) + 0.5) / float(numShadowSamples));
+            float theta = i * GOLDEN_ANGLE + randomRotation;
+            float sin_angle = r * sin(SUN_CONE_ANGLE);
+            float cos_angle = sqrt(1.0 - sin_angle * sin_angle);
+            
+            float3 offset = float3(cos(theta) * sin_angle, sin(theta) * sin_angle, cos_angle);
+            float3 L_sample = normalize(orient_to_world(offset, sunDir, T_sun, B_sun));
+            
+            float2 sampleUV = dirToEquirectangularUV(L_sample);
+            // On utilise le niveau de mipmap (ex: Mip 1.0) pour profiter du flou et filtrer la zone lumineuse du cône
+            accumSunColor += backgroundTexture.SampleLevel(sampleUV, 1.0).xyz * ENVIRONMENT_INTENSITY;
+            
+            if (dot(N, L_sample) > 0.001) {
+                accumShadow += shadow_intensity(P, N, L_sample, 10000.0);
+            } else {
+                accumShadow += float3(1.0);
+            }
+        }
+        sunColor = accumSunColor / float(numShadowSamples);
+        shadowColor = accumShadow / float(numShadowSamples);
+    } else {
+        float2 sunUV = dirToEquirectangularUV(sunDir);
+        sunColor = backgroundTexture.SampleLevel(sunUV, 0.0).xyz * ENVIRONMENT_INTENSITY * 0.0002;
+        if (NdotL > 0.001) {
+            shadowColor = shadow_intensity(P, N, sunDir, 10000.0);
+        }
+    }
+    
+    float3 Lo = float3(0.0);
+    
+    // Si l'objet n'est pas caché du soleil
+    if (any(shadowColor < 0.999) && NdotL > 0.0)
     {
-        float3 L = normalize(camera.lightsPos[i].xyz - P);
-        float3 H = normalize(V + L);
-
-        float3 shadowColor = shadow_intensity(P, L, camera.lightsPos[i].xyz);
-        if (all(shadowColor >= 0.999)) continue;
-
-        float attenuation = calculateAttenuation(P, camera.lightsPos[i].xyz);
-        float3 lightColor = float3(23.47, 21.31, 20.79);
-        float3 radiance = lightColor * attenuation * (1.0 - shadowColor);
-
-        float3 F0 = float3(0.04);
-        F0 = lerp(F0, albedoFactor, metallicFactor);
-        float3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+        float3 radiance = sunColor * (1.0 - shadowColor);
+        
+        float3 F0 = lerp(float3(0.04), albedoFactor, metallicFactor);
+        float3 F = fresnelSchlickRoughness(max(dot(H, V), 0.0), F0, roughnessFactor);
 
         float NDF = DistributionGGX(N, H, roughnessFactor);
         float G = GeometrySmith(N, V, L, roughnessFactor);
@@ -293,30 +346,26 @@ float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float 
         float3 specular = numerator / max(denominator, 0.001);
 
         float3 kS = F;
-        float3 kD = float3(1.0) - kS;
-        kD *= 1.0 - metallicFactor;
+        float3 kD = (float3(1.0) - kS) * (1.0 - metallicFactor);
 
-        float NdotL = max(dot(N, L), 0.0);
+        
+        // On ajoute la partie spéculaire et diffuse de la lumière analytique
+        Lo += ((kD * albedoFactor / PI) * NdotL + specular * NdotL) * radiance;
+    }
 
-        float backNdotL = max(dot(-N, L), 0.0);
-        float3 translucency = backNdotL * transmission * albedoFactor;
-
-        Lo += ((kD * albedoFactor / PI) * NdotL + specular * NdotL + translucency) * radiance;
-    }*/
-
-    // Échantillonnage de la lumière diffuse de l'environnement selon la normale N
+    // --- LUMIÈRE AMBIANTE (Ciel HDRI) ---
     float2 irradianceUV = dirToEquirectangularUV(N);
     // On échantillonne un niveau de MipMap élevé (ex: Mip 6 ou 7) pour flouter le décor et obtenir l'irradiance
     float3 irradiance = backgroundTexture.SampleLevel(irradianceUV, 6.0).xyz * ENVIRONMENT_INTENSITY;
-    float3 F0 = float3(0.04);
-    F0 = lerp(F0, albedoFactor, metallicFactor);
-    float3 F = fresnelSchlick(max(dot(N, V), 0.0), F0);
-    float3 kS = F;
-    float3 kD = (1.0 - kS) * (1.0 - metallicFactor);
+    float3 F0_amb = float3(0.04);
+    F0_amb = lerp(F0_amb, albedoFactor, metallicFactor);
+    float3 F_amb = fresnelSchlick(max(dot(N, V), 0.0), F0_amb);
+    float3 kS_amb = F_amb;
+    float3 kD_amb = (1.0 - kS_amb) * (1.0 - metallicFactor);
     // Éclairage diffus provenant de l'arrière-plan
-    float3 diffuse = kD * albedoFactor * irradiance;
+    float3 diffuse = kD_amb * albedoFactor * irradiance;
 
-    return diffuse + emission;
+    return Lo + diffuse + emission;
 }
 
 // Projection équirectangulaire (Map HDR panoramique) : Direction L -> UV [0,1]x[0,1]
@@ -350,9 +399,11 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
         if (dot(N, L) <= 0.0) continue;
 
         RayDesc reflectionRayDesc;
-        reflectionRayDesc.Origin = P;
+        // Biais pour éviter que le reflet ne percute la surface elle-même (Acné de reflet)
+        float bias = 0.1;
+        reflectionRayDesc.Origin = P + N * bias;
         reflectionRayDesc.Direction = L;
-        reflectionRayDesc.TMin = EPSILON;
+        reflectionRayDesc.TMin = 0.01;
         reflectionRayDesc.TMax = 1e4;
 
         RayQuery<RAY_FLAG_FORCE_OPAQUE> rq;
@@ -384,7 +435,7 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
 
             if ((inst.activeAttributes & 4u) != 0u) {
                 float3 normal = intersection_normal(instanceID, primIndex, bary);
-                intersectionColor.rgb = pbr(hitPosition, normal, intersectionColor.xyz, inst.metallic, inst.roughness, inst.transmission, inst.emissiveColor.rgb);
+                intersectionColor.rgb = pbr(hitPosition, normal, intersectionColor.xyz, inst.metallic, inst.roughness, inst.transmission, inst.emissiveColor.rgb, seed, 1);
             }
 
             sampleColor = intersectionColor.rgb;
@@ -398,7 +449,7 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
         // Fresnel calculation on the microfacet
         float3 F0 = float3(0.04);
         F0 = lerp(F0, albedo, metallicFactor);
-        float3 F_env = fresnelSchlick(max(dot(H, V), 0.0), F0);
+        float3 F_env = fresnelSchlickRoughness(max(dot(H, V), 0.0), F0, roughnessFactor);
 
         float3 radiance = sampleColor * F_env;
         
@@ -463,7 +514,7 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
 
         float3 N = normalize(vertIn.fragNormal);
 
-        color = float4(pbr(P, N, albedoFactor, metallicFactor, roughnessFactor, push.transmissionFactor, push.emissiveColor.rgb), 1.f);
+        color = float4(pbr(P, N, albedoFactor, metallicFactor, roughnessFactor, push.transmissionFactor, push.emissiveColor.rgb, seed, SHADOW_CONE_SAMPLES), 1.f);
 
         float rayLength = 0.0;
         float4 reflectionColor = apply_reflection(P, N, albedoFactor, metallicFactor, roughnessFactor, seed, rayLength);
@@ -485,9 +536,9 @@ FragmentOutput fragMain(VSOutput vertIn) : SV_TARGET {
     }
     
     // Motion vector calculation
-    float4 prevClipPos = mul(camera.prevViewProj, mul(push.prevModel, float4(P, 1.0)));
+    float4 prevClipPos = mul(camera.prevViewProj, float4(vertIn.prevWorldPos, 1.0));
     float2 prevNDC = prevClipPos.xy / prevClipPos.w;
-    float4 currClipPos = mul(camera.proj, mul(camera.view, mul(push.model, float4(P, 1.0))));
+    float4 currClipPos = mul(camera.proj, mul(camera.view, float4(P, 1.0)));
     float2 currNDC = currClipPos.xy / currClipPos.w;
     
     // Convert NDC to UV (Vulkan: invert Y via -0.5)

@@ -1,5 +1,7 @@
+#include "GLFW/glfw3.h"
 #include "glm/ext/matrix_transform.hpp"
 #include "glm/geometric.hpp"
+#include "model.hpp"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <tiny_gltf.h>
 #define TINYGLTF
@@ -21,6 +23,26 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
     auto &commandBuffer = commandBuffers[frameIndex];
 
     commandBuffer.begin({});
+
+    for (auto& model : models) {
+        if (*model->skin.descriptor_set) {
+            skinMgr->dispatchSkinning(commandBuffer, model->skin);
+            skinMgr->insertSkinningBarrier(commandBuffer, *model->skin.output_vertex_buffer);
+        }
+        
+        // --- MISE À JOUR DU BLAS ---
+        // On demande à chaque mesh du modèle de se mettre à jour avec les nouveaux sommets déformés (skinning)
+        model->updateBlas(commandBuffer, device);
+
+        // Barrière pour attendre que la mise à jour du BLAS soit terminée avant de construire le TLAS
+        vk::MemoryBarrier blasBarrier{
+            .srcAccessMask = vk::AccessFlagBits::eAccelerationStructureWriteKHR,
+            .dstAccessMask = vk::AccessFlagBits::eAccelerationStructureReadKHR};
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
+            vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
+            {}, blasBarrier, nullptr, nullptr);
+    }
 
     vk::BufferDeviceAddressInfo instancesAddrInfo{.buffer = *instancesBuffer};
     vk::DeviceAddress instancesDeviceAddress = device.getBufferAddress(instancesAddrInfo);
@@ -174,13 +196,6 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 1, *textureManager.getDescriptorSet(), nullptr);
 
-    // 1. Mise à jour des matrices des modèles physiques depuis Jolt
-    for (auto &entity : physicsEntities)
-    {
-        glm::mat4 objectMatrix = physicsWorld->get_body_pose(entity.physicsBodyId).to_matrix();
-        entity.graphicModel->setModelTransform(objectMatrix);
-    }
-
     for (auto &model : models)
     {
         model->draw(commandBuffer, pipelineLayout);
@@ -313,18 +328,19 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     static glm::mat4 previousViewProj = glm::mat4(1.f);
 
     static glm::vec3 previousCamPoses[3] = {glm::vec3(1.f), glm::vec3(1.f), glm::vec3(1.f)};
-    static glm::vec3 previousBallPos = glm::vec3(1.f);
+    static glm::vec3 previousplayerPos = glm::vec3(1.f);
 
-    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId).position;
-    float distance = glm::distance(glm::vec3(0.f), ballPos);
+    glm::vec3 playerPos = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId).position;
+    playerPos += glm::vec3(0, 2, 0);
+    float distance = glm::distance(glm::vec3(0.f), playerPos);
     
-    if (distance < 10) followingmode = 0;
+    followingmode = 2;
     //else if (distance < 100) followingmode = 1;
-    else followingmode = 2;
+    //else followingmode = 2;
 
     if (followingmode == 0) {
         camera.Position = glm::vec3(0.0f, 2.f, 0.f);
-        previousBallPos = ballPos;
+        previousplayerPos = playerPos;
         for (int i = 2; i >= 0; i--) {
             if (i == 0) {
                 previousCamPoses[i] = camera.Position;
@@ -335,9 +351,9 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     }
     else if (followingmode == 1) {
         camera.Position = glm::vec3(0.0f, 2.f, 0.f);
-        camera.lookAt(ballPos);
+        camera.lookAt(playerPos);
 
-        previousBallPos = ballPos;
+        previousplayerPos = playerPos;
         for (int i = 2; i >= 0; i--) {
             if (i == 0) {
                 previousCamPoses[i] = camera.Position;
@@ -346,18 +362,14 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
             previousCamPoses[i] = previousCamPoses[i - 1];
         }
     } else if (followingmode == 2) {
-        // Get the camera pos from the ball motion vector
-        // Get the normalized ball motion vector
-        glm::vec3 mVec = ballPos - previousBallPos;
-        mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
-        mVec.y = 0.f;
+        PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
+        glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
 
         // Calculate the camera position
         glm::vec3 camPos;
-        camPos = ballPos;
+        camPos = playerPos;
         camPos += glm::vec3(0.f, 1.f, 0.f);
-        camPos -= mVec * 3.f;
+        camPos -= dir * 3.f;
 
         for (int i = 0; i < 3; i++) {
             camPos += previousCamPoses[i];
@@ -365,9 +377,9 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
         camPos /= 4;
 
         camera.Position = camPos;
-        camera.lookAt(ballPos);
+        camera.lookAt(playerPos);
 
-        previousBallPos = ballPos;
+        previousplayerPos = playerPos;
         for (int i = 2; i >= 0; i--) {
             if (i == 0) {
                 previousCamPoses[i] = camPos;
@@ -394,6 +406,8 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     ubo.proj = proj;
     ubo.camPos = glm::vec4(camera.Position, 1.f);
     ubo.time = time;
+    // La direction du soleil est maintenant automatiquement calculée depuis l'HDRI !
+    ubo.sunDir = glm::vec4(backgroundTexture.sunDir, 0.0f);
 
     ffxMgr->updateConstantsBuffer(ubo.view, ubo.proj, previousViewProj);
 
@@ -445,6 +459,14 @@ void VulkanApp::drawFrame()
     }
 
     updateUniformBuffer(frameIndex);
+
+    // 1. Mise à jour des matrices des modèles physiques depuis Jolt AVANT de reconstruire le TLAS !
+    for (auto &entity : physicsEntities)
+    {
+        glm::mat4 objectMatrix = physicsWorld->get_body_pose(entity.physicsBodyId).to_matrix();
+        entity.graphicModel->setModelTransform(objectMatrix);
+    }
+
     updateTlasInstances();
 
     commandBuffers[frameIndex].reset();
@@ -493,7 +515,8 @@ void VulkanApp::loadModels()
         physicalDevice,
         commandPool,
         graphicsQueue,
-        textureManager));
+        textureManager,
+        *skinMgr));
 
     models.back()->setStaticTransform(glm::scale_slow(glm::mat4(1.f), glm::vec3(10.f)));
 
@@ -504,6 +527,7 @@ void VulkanApp::loadModels()
         JPH::EMotionType::Static, 
         Layers::NON_MOVING
     );
+    floorSettings.mFriction = 1.0f;
     JPH::BodyID floorBodyId = physicsWorld->create_body(floorSettings);
 
     PhysicsEntity floorEntity;
@@ -513,23 +537,27 @@ void VulkanApp::loadModels()
     physicsEntities.push_back(floorEntity);
 
     models.push_back(std::make_unique<GltfModel>(
-        "res/models/sphere.glb",
+        "res/models/man.glb",
         device,
         physicalDevice,
         commandPool,
         graphicsQueue,
-        textureManager));
+        textureManager,
+        *skinMgr));
     
-    models.back()->setStaticTransform(glm::scale(glm::mat4(1.f), glm::vec3(.25f)));
+    models.back()->setStaticTransform(glm::scale(glm::mat4(1.f), glm::vec3(.5f)));
 
     JPH::BodyCreationSettings sphereSettings(
-        models.back()->getConvexHull(),
-        JPH::RVec3(0.f, 1.f, 0.f),
+        models.back()->getBoxShape(),
+        JPH::RVec3(-3.f, 3.f, -3.f),
         JPH::Quat::sIdentity(),
         JPH::EMotionType::Dynamic,
         Layers::MOVING
     );
     sphereSettings.mMotionQuality = JPH::EMotionQuality::LinearCast;
+    sphereSettings.mFriction = 1.0f;
+    sphereSettings.mLinearDamping = 0.1f;
+    sphereSettings.mAllowedDOFs = JPH::EAllowedDOFs::TranslationX | JPH::EAllowedDOFs::TranslationY | JPH::EAllowedDOFs::TranslationZ;
     JPH::BodyID sphereBodyId = physicsWorld->create_body(sphereSettings);
 
     PhysicsEntity sphereEntity;
@@ -563,8 +591,7 @@ void VulkanApp::mainLoop()
     device.waitIdle();
 }
 
-int main()
-{
+int main() {
     try
     {
         VulkanApp app;

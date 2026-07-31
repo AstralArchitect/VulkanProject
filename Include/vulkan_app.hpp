@@ -23,6 +23,7 @@ import vulkan_hpp;
 #endif
 
 #include "model.hpp"
+#include "skin.hh"
 
 #include "text_manager.hpp"
 
@@ -60,6 +61,7 @@ private:
         alignas(16) glm::mat4 prevViewProj;
         alignas(16) glm::vec4 camPos;        // vec4
         alignas(16) float time;
+        alignas(16) glm::vec4 sunDir;
     };
 
     std::vector<const char *> requiredDeviceExtension = {
@@ -103,6 +105,7 @@ private:
     std::vector<PhysicsEntity> physicsEntities;
 
     TextureManager textureManager;
+    std::unique_ptr<SkinMgr> skinMgr;
 
     vk::raii::Image depthImage = nullptr;
     vk::raii::DeviceMemory depthImageMemory = nullptr;

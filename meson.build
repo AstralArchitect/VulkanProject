@@ -29,7 +29,7 @@ cpp_sources = [
     cpp_dir + 'camera.cpp',
     cpp_dir + 'ffx-mgr.cc',
     cpp_dir + 'jolt_physics.cc',
-    cpp_dir + 'bones.cc'
+    cpp_dir + 'skin.cc'
 ]
 
 sources = cpp_sources
@@ -93,6 +93,23 @@ custom_target(
     'compile_slang_composition',
     input: 'res/shaders/compute/composition.slang',
     output: 'composition.spv',
+    command: [
+        slangc,
+        '@INPUT@',
+        '-target', 'spirv',
+        '-profile', 'spirv_1_4',
+        '-emit-spirv-directly',
+        '-fvk-use-entrypoint-name',
+        '-entry', 'main',
+        '-o', '@OUTPUT@',
+    ],
+    build_by_default: true,
+)
+
+custom_target(
+    'compile_slang_skinning',
+    input: 'res/shaders/compute/skinning.slang',
+    output: 'skinning.spv',
     command: [
         slangc,
         '@INPUT@',

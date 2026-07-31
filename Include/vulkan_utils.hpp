@@ -282,7 +282,18 @@ namespace VulkanUtils {
         vk::raii::Sampler sampler = nullptr;
         uint32_t width = 0;
         uint32_t height = 0;
+        uint32_t mipLevels = 1;
+        glm::vec3 sunDir = glm::vec3(0.0f, 1.0f, 0.0f);
     };
+
+    void generateMipmaps(
+        const vk::raii::PhysicalDevice& physicalDevice,
+        vk::raii::CommandBuffer& commandBuffer,
+        vk::raii::Image& image,
+        vk::Format imageFormat,
+        int32_t texWidth,
+        int32_t texHeight,
+        uint32_t mipLevels);
 
     // Charge les données brutes CPU d'un fichier .hdr (RGBA float 32 bits)
     HDRImageData loadHDRData(const std::string& filepath);

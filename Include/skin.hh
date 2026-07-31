@@ -1,3 +1,5 @@
+#pragma once
+
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES)
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #include <vulkan/vulkan_raii.hpp>
@@ -8,18 +10,18 @@ import vulkan_hpp;
 
 struct SkinComputeResources {
     // The mesh's original, unchanging rest-pose vertices
-    vk::raii::Buffer input_vertex_buffer = nullptr;
-    vk::raii::DeviceMemory input_vertex_memory = nullptr;
+    vk::raii::Buffer *input_vertex_buffer = nullptr;
+    vk::raii::DeviceMemory *input_vertex_memory = nullptr;
     uint32_t vertex_count;
 
     // Updated each frame with the current joint matrices
-    vk::raii::Buffer joint_matrix_buffer = nullptr;
-    vk::raii::DeviceMemory joint_matrix_memory = nullptr;
+    vk::raii::Buffer *joint_matrix_buffer = nullptr;
+    vk::raii::DeviceMemory *joint_matrix_memory = nullptr;
     uint32_t joint_count;
 
     // Written by compute, read by rasterizer/raytracer/physics
-    vk::raii::Buffer output_vertex_buffer = nullptr;
-    vk::raii::DeviceMemory output_vertex_memory = nullptr;
+    vk::raii::Buffer *output_vertex_buffer = nullptr;
+    vk::raii::DeviceMemory *output_vertex_memory = nullptr;
 
     // Descriptor set referencing all three buffers
     vk::raii::DescriptorSet descriptor_set = nullptr;
@@ -29,9 +31,10 @@ struct SkinPushConstants {
     unsigned int vertex_count;
 };
 
-class BonesMgr {
+class SkinMgr {
 public:
-    BonesMgr(vk::raii::Device &device, vk::raii::PhysicalDevice &physicalDevice);
+    SkinMgr(vk::raii::Device &device, vk::raii::PhysicalDevice &physicalDevice);
+    const vk::raii::DescriptorSetLayout& getDescriptorSetLayout() const { return descriptorSetLayout; }
     void dispatchSkinning(const vk::raii::CommandBuffer &cmd, const SkinComputeResources &skin);
     void insertSkinningBarrier(const vk::raii::CommandBuffer &cmd, vk::Buffer outputVertexBuffer);
 private:

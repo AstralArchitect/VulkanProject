@@ -55,7 +55,8 @@ public:
     // Queries
     virtual bool raycast(const glm::vec3& origin, const glm::vec3& direction, float max_distance,
                          float& out_distance, glm::vec3& out_normal,
-                         JPH::BodyID& out_body_id) const = 0;
+                         JPH::BodyID& out_body_id,
+                         JPH::BodyID ignore_body_id = JPH::BodyID()) const = 0;
 
     virtual void add_force(JPH::BodyID body_id, const glm::vec3& force) = 0;
     virtual void add_impulse(JPH::BodyID body_id, const glm::vec3& impulse) = 0;

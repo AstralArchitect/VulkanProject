@@ -71,59 +71,102 @@ void VulkanApp::processInput(GLFWwindow *window)
 {
     static bool isFullscreen = false;
     static int windowedWidth, windowedHeight, windowedPosX, windowedPosY;
-    static glm::vec3 previousBallPos = glm::vec3(1.f);
-    glm::vec3 ballPos = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId).position;
+    
+    static bool wasGrounded = true;
+    static int currentAnimIndex = -1; // -1: bind pose / idle, 0: landing, 1: running, 2: jumping/air
+    static float animStartTime = 0.0f;
+
+    static float lastJumpTime = 0.f;
+
+    PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
+    glm::vec3 vel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
+    float currentTime = static_cast<float>(glfwGetTime());
+
+    // Détection dynamique du sol par Raycast vers le bas (ignore le corps du joueur)
+    glm::vec3 downRayOrigin = pose.position + glm::vec3(0.0f, 0.5f, 0.0f);
+    glm::vec3 downRayDir = glm::vec3(0.0f, -1.0f, 0.0f);
+    float hitDist = 0.0f;
+    glm::vec3 hitNormal(0.0f);
+    JPH::BodyID hitBody;
+
+    bool isGrounded = false;
+    if (physicsWorld->raycast(downRayOrigin, downRayDir, 2.0f, hitDist, hitNormal, hitBody, physicsEntities[1].physicsBodyId)) {
+        // Sol praticable si le sol est sous les pieds (dist <= 1.35m) et la normale pointe vers le haut (hitNormal.y >= 0.5f)
+        if (hitDist <= 1.35f && hitNormal.y >= 0.5f) {
+            isGrounded = true;
+        }
+    }
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
     if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
     {
-        glm::vec3 mVec = ballPos - previousBallPos;
-        mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
-        mVec.y = 0.f;
-        
-        mVec = glm::mat3(glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0.f, 1.f, 0.f))) * mVec;
-
-        mVec *= 200;
-
-        physicsWorld->add_force(physicsEntities[1].physicsBodyId, mVec);
+        pose.orientation = glm::normalize(glm::rotate(pose.orientation, glm::radians(3.0f), glm::vec3(0.f, 1.f, 0.f)));
+        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, pose);
     }
     else if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
     {
-        glm::vec3 mVec = ballPos - previousBallPos;
-        mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
-        mVec.y = 0.f;
-
-        mVec = glm::mat3(glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0.f, -1.f, 0.f))) * mVec;
-
-        mVec *= 200;
-
-        physicsWorld->add_force(physicsEntities[1].physicsBodyId, mVec);
+        pose.orientation = glm::normalize(glm::rotate(pose.orientation, glm::radians(-3.0f), glm::vec3(0.f, 1.f, 0.f)));
+        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, pose);
     }
+
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        if (isGrounded && currentAnimIndex != 2 && currentAnimIndex != 0 && currentTime - lastJumpTime > .5f) {
+            physicsWorld->add_impulse(physicsEntities[1].physicsBodyId, glm::vec3(0.f, 10000.f, 0.f));
+            isGrounded = false;
+            lastJumpTime = currentTime;
+        }
+        if (currentAnimIndex != 2) {
+            currentAnimIndex = 2;
+            animStartTime = currentTime;
+        }
+    }
+
+    if (!wasGrounded && isGrounded) {
+        // Atterissage au sol: déclenche l'animation 0 une seule fois
+        currentAnimIndex = 0;
+        animStartTime = currentTime;
+    } else if (!isGrounded && currentAnimIndex != 2) {
+        // En l'air: déclenche l'animation 2 une seule fois
+        currentAnimIndex = 2;
+        animStartTime = currentTime;
+    }
+
+    bool isMoving = false;
     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-    {
-        glm::vec3 mVec = ballPos - previousBallPos;
-        mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(1.f, 0.f, 0.f) : mVec;
-        mVec.y = 0.f;
+    {   
+        glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
+        float speed = 10.0f;
+        
+        glm::vec3 rayOrigin = pose.position + dir * 0.5f + glm::vec3(0.0f, 0.5f, 0.0f);
+        glm::vec3 rayDir = glm::vec3(0.0f, -1.0f, 0.0f);
+        
+        float hitDist;
+        glm::vec3 hitNormal;
+        JPH::BodyID hitBody;
+        bool groundAhead = physicsWorld->raycast(rayOrigin, rayDir, 1.5f, hitDist, hitNormal, hitBody, physicsEntities[1].physicsBodyId);
 
-        mVec *= 200;
-
-        physicsWorld->add_force(physicsEntities[1].physicsBodyId, mVec);
+        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
+        if (groundAhead && currentAnimIndex != 0 && currentAnimIndex != 2)
+        {
+            physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(dir.x * speed, currentVel.y, dir.z * speed));
+            isMoving = true;
+        }
+        else
+        {
+            physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(currentVel.x, currentVel.y, currentVel.z));
+        }
     }
     else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
     {
-        glm::vec3 mVec = ballPos - previousBallPos;
-        mVec = glm::normalize(mVec);
-        mVec = ballPos == previousBallPos ? glm::vec3(0.f, 0.f, 0.f) : mVec;
-        mVec.y = 0.f;
+        PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
+        glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
+        float speed = 10.0f;
         
-        mVec *= 200;
-
-        physicsWorld->add_force(physicsEntities[1].physicsBodyId, -mVec);
+        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
+        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(-dir.x * speed, currentVel.y, -dir.z * speed));
+        isMoving = true;
     }
     else if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
     {
@@ -133,9 +176,48 @@ void VulkanApp::processInput(GLFWwindow *window)
         physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, initialPose);
         physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(0.0f));
 
-        ballPos = initialPose.position;
+        currentAnimIndex = -1;
     }
-    previousBallPos = ballPos;
+    else {
+        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
+        float dampingFactor = 0.8f;
+        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(currentVel.x * dampingFactor, currentVel.y, currentVel.z * dampingFactor));
+    }
+
+    if (isGrounded) {
+        if (currentAnimIndex == 0) {
+            float animDuration = models[1]->getAnimationDuration(0);
+            if (currentTime - animStartTime >= animDuration) {
+                if (isMoving) {
+                    currentAnimIndex = 1;
+                    animStartTime = currentTime;
+                } else {
+                    currentAnimIndex = -1;
+                }
+            }
+        } else if (isMoving) {
+            if (currentAnimIndex != 1) {
+                currentAnimIndex = 1;
+                animStartTime = currentTime;
+            }
+        } else if (currentAnimIndex != 0) {
+            currentAnimIndex = -1;
+        }
+    }
+
+    if (currentAnimIndex == 2) {
+        float elapsedTime = currentTime - animStartTime;
+        models[1]->updateAnimation(2, elapsedTime, false);
+    } else if (currentAnimIndex == 0) {
+        float elapsedTime = currentTime - animStartTime;
+        models[1]->updateAnimation(0, elapsedTime, false);
+    } else if (currentAnimIndex == 1) {
+        models[1]->updateAnimation(1, currentTime, true);
+    } else {
+        models[1]->resetToBindPose();
+    }
+
+    wasGrounded = isGrounded;
 
     if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS)
     {
@@ -222,6 +304,7 @@ void VulkanApp::initVulkan()
     createCommandBuffers();
 
     textureManager.init(device, physicalDevice, commandPool, graphicsQueue);
+    skinMgr = std::make_unique<SkinMgr>(device, physicalDevice);
 
     createDescriptorSetLayout();
     createGraphicsPipeline();

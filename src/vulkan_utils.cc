@@ -2,6 +2,8 @@
 
 #include <iostream>
 #include <fstream>
+#include <cmath>
+#include <algorithm>
 
 #include "stb_image.h"
 #include "vulkan/vulkan_raii.hpp"
@@ -52,6 +54,84 @@ VulkanUtils::HDRImageData VulkanUtils::loadHDRData(const std::string& filepath) 
     return result;
 }
 
+void VulkanUtils::generateMipmaps(
+    const vk::raii::PhysicalDevice &physicalDevice,
+    vk::raii::CommandBuffer &commandBuffer,
+    vk::raii::Image &image,
+    vk::Format imageFormat,
+    int32_t texWidth,
+    int32_t texHeight,
+    uint32_t mipLevels)
+{
+    vk::FormatProperties formatProperties = physicalDevice.getFormatProperties(imageFormat);
+
+    if (!(formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear))
+    {
+        throw std::runtime_error("texture image format does not support linear blitting!");
+    }
+
+    vk::ImageMemoryBarrier barrier = {
+        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+        .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+        .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+        .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .srcQueueFamilyIndex = vk::QueueFamilyIgnored,
+        .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
+        .image = image,
+        .subresourceRange = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1}};
+
+    int32_t mipWidth = texWidth;
+    int32_t mipHeight = texHeight;
+
+    for (uint32_t i = 1; i < mipLevels; i++)
+    {
+        barrier.subresourceRange.baseMipLevel = i - 1;
+        barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+        barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
+
+        vk::ImageBlit blit = {
+            .srcSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = i - 1, .layerCount = 1},
+            .srcOffsets = std::array<vk::Offset3D, 2>({{}, {mipWidth, mipHeight, 1}}),
+            .dstSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = i, .layerCount = 1},
+            .dstOffsets = std::array<vk::Offset3D, 2>({{}, {1 < mipWidth ? mipWidth / 2 : 1, 1 < mipHeight ? mipHeight / 2 : 1, 1}})};
+
+        commandBuffer.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image, vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
+
+        barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+        barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
+
+        if (1 < mipWidth)
+        {
+            mipWidth /= 2;
+        }
+        if (1 < mipHeight)
+        {
+            mipHeight /= 2;
+        }
+    }
+
+    barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+    barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+    barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
+}
+
 VulkanUtils::HDRTexture VulkanUtils::loadHDRTexture(
     const vk::raii::Device& device,
     const vk::raii::PhysicalDevice& physicalDevice,
@@ -62,6 +142,38 @@ VulkanUtils::HDRTexture VulkanUtils::loadHDRTexture(
 {
     HDRImageData hdrData = loadHDRData(filepath);
     vk::DeviceSize imageSize = static_cast<vk::DeviceSize>(hdrData.width) * hdrData.height * 4 * sizeof(float);
+
+    uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(hdrData.width, hdrData.height)))) + 1;
+
+    // Calcul de la direction du soleil (le pixel le plus lumineux)
+    float maxLuminance = -1.0f;
+    int maxX = 0;
+    int maxY = 0;
+    for (int y = 0; y < hdrData.height; ++y) {
+        for (int x = 0; x < hdrData.width; ++x) {
+            int index = (y * hdrData.width + x) * 4;
+            float r = hdrData.pixels[index];
+            float g = hdrData.pixels[index + 1];
+            float b = hdrData.pixels[index + 2];
+            float luminance = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            if (luminance > maxLuminance) {
+                maxLuminance = luminance;
+                maxX = x;
+                maxY = y;
+            }
+        }
+    }
+
+    // Conversion des coordonnées (x,y) en direction 3D pour la projection équirectangulaire
+    float u = static_cast<float>(maxX) / static_cast<float>(hdrData.width);
+    float v = static_cast<float>(maxY) / static_cast<float>(hdrData.height);
+    float theta = (u - 0.5f) * 2.0f * glm::pi<float>();
+    float phi = (0.5f - v) * glm::pi<float>();
+    float sunY = std::sin(phi);
+    float cosPhi = std::cos(phi);
+    float sunX = cosPhi * std::cos(theta);
+    float sunZ = cosPhi * std::sin(theta);
+    glm::vec3 calculatedSunDir = glm::normalize(glm::vec3(sunX, sunY, sunZ));
 
     auto [stagingBuffer, stagingBufferMemory] = createBuffer(
         device,
@@ -82,19 +194,19 @@ VulkanUtils::HDRTexture VulkanUtils::loadHDRTexture(
         static_cast<uint32_t>(hdrData.height),
         format,
         vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+        vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
         vk::MemoryPropertyFlagBits::eDeviceLocal,
         vk::SampleCountFlagBits::e1,
-        1
+        mipLevels
     );
 
     vk::raii::CommandBuffer cmd = beginSingleTimeCommands(device, commandPool);
-    transitionImageLayout(cmd, *image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, 1);
+    transitionImageLayout(cmd, *image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
     copyBufferToImage(cmd, stagingBuffer, image, static_cast<uint32_t>(hdrData.width), static_cast<uint32_t>(hdrData.height));
-    transitionImageLayout(cmd, *image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, 1);
+    generateMipmaps(physicalDevice, cmd, image, format, hdrData.width, hdrData.height, mipLevels);
     endSingleTimeCommands(std::move(cmd), graphicsQueue);
 
-    vk::raii::ImageView imageView = createImageView(device, *image, format, vk::ImageAspectFlagBits::eColor, 1);
+    vk::raii::ImageView imageView = createImageView(device, *image, format, vk::ImageAspectFlagBits::eColor, mipLevels);
 
     vk::PhysicalDeviceProperties properties = physicalDevice.getProperties();
     vk::SamplerCreateInfo samplerInfo{
@@ -110,7 +222,7 @@ VulkanUtils::HDRTexture VulkanUtils::loadHDRTexture(
         .compareEnable = vk::False,
         .compareOp = vk::CompareOp::eAlways,
         .minLod = 0.0f,
-        .maxLod = vk::LodClampNone};
+        .maxLod = static_cast<float>(mipLevels)};
 
     vk::raii::Sampler sampler = vk::raii::Sampler(device, samplerInfo);
 
@@ -121,6 +233,8 @@ VulkanUtils::HDRTexture VulkanUtils::loadHDRTexture(
     texture.sampler = std::move(sampler);
     texture.width = static_cast<uint32_t>(hdrData.width);
     texture.height = static_cast<uint32_t>(hdrData.height);
+    texture.mipLevels = mipLevels;
+    texture.sunDir = calculatedSunDir;
 
     return texture;
 }
