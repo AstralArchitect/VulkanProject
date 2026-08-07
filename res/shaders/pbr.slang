@@ -1,3 +1,5 @@
+#include "compute/cloud_common.slang"
+
 struct VSInput {
     [[vk::location(0)]] float3 inPos;
     [[vk::location(1)]] float3 inNormal;
@@ -19,6 +21,7 @@ struct CameraUBO {
     float4 camPos;
     float time;
     float4 sunDir;
+    float4 sunColor;
 };
 
 struct InstanceData {
@@ -41,7 +44,7 @@ struct InstanceData {
 [vk::binding(0, 0)] ConstantBuffer<CameraUBO> camera;
 [vk::binding(1, 0)] RaytracingAccelerationStructure accelerationStructure;
 [vk::binding(2, 0)] StructuredBuffer<InstanceData> instanceDataBuffer;
-[vk::binding(3, 0)] Sampler2D backgroundTexture;
+[vk::binding(3, 0)] SamplerCube prefilteredSkyMap;
 
 struct ModelPushConstants {
     float4x4 model;
@@ -79,9 +82,11 @@ static const float linear = 0.09f;
 static const float quadratic = 0.032f;
 static const float PI = 3.14159265359;
 static const float EPSILON = 0.001f;
-static const float NUM_SAMPLES = 1;
+static const int NUM_SAMPLES = 1;
 static const int SHADOW_CONE_SAMPLES = 8;
 static const float SUN_CONE_ANGLE = 0.06f; // ~3.5 degrés d'angle pour le cône solaire (ombres douces)
+static const int RTAO_SAMPLES = 2;
+static const float rtaoMaxDist = 3.0;
 
 static const float ENVIRONMENT_INTENSITY = 1;
 
@@ -131,12 +136,73 @@ float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
     return ggx1 * ggx2;
 }
 
+float calculateCloudShadow(float3 P, float3 sunDir, float time) {
+    if (sunDir.y <= 0.01) return 1.0;
+
+    float H_cloud = 25.0;
+    float t = (H_cloud - P.y) / sunDir.y;
+    
+    if (t <= 0.0) return 1.0;
+
+    float3 cloudPos = P + sunDir * t;
+
+    float density = sampleCloudDensity(cloudPos, time);
+
+    return exp(-density * 4.0);
+}
+
+
+float3 sampleCosineHemisphere(float2 u) {
+    float phi = 2.0 * PI * u.x;
+    float r = sqrt(u.y);
+    float x = r * cos(phi);
+    float y = r * sin(phi);
+    float z = sqrt(max(0.0, 1.0 - u.y));
+    return float3(x, y, z);
+}
+
+
+float calculate_rtao(float3 P, float3 N, inout uint seed) {
+    float3 T, B;
+    getTangentSpace(N, T, B);
+
+    float accumulatedVisibility = 0.0;
+
+    for (int i = 0; i < RTAO_SAMPLES; ++i) {
+        float2 u = float2(next_rand(seed), next_rand(seed));
+        
+        float3 localDir = sampleCosineHemisphere(u);
+        float3 dir = normalize(orient_to_world(localDir, N, T, B));
+
+        RayDesc ray;
+        ray.Origin = P + N * 0.05;
+        ray.Direction = dir;
+        ray.TMin = 0.05;
+        ray.TMax = rtaoMaxDist;
+
+        RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> rq;
+        let rayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+
+        rq.TraceRayInline(accelerationStructure, rayFlags, 0xFF, ray);
+
+        while (rq.Proceed()) {}
+
+        if (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+            float hitT = rq.CommittedRayT();
+            accumulatedVisibility += saturate(hitT / rtaoMaxDist);
+        } else {
+            accumulatedVisibility += 1.0;
+        }
+    }
+
+    return accumulatedVisibility / float(RTAO_SAMPLES);
+}
+
+
 float3 shadow_intensity(float3 P, float3 N, float3 lightDir, float maxDist)
 {
     float3 lightTransmissionColor = float3(1.0);
-    // Biais de normale pour éviter la shadow acne (auto-intersection)
-    // On l'augmente un peu pour éviter que le rayon ne percute la surface d'où il part.
-    float bias = 0.1; 
+    float bias = 0.001; 
     float3 currentOrigin = P + N * bias;
     float3 dir = normalize(lightDir);
 
@@ -145,7 +211,6 @@ float3 shadow_intensity(float3 P, float3 N, float3 lightDir, float maxDist)
         RayDesc shadowRayDesc;
         shadowRayDesc.Origin = currentOrigin;
         shadowRayDesc.Direction = dir;
-        // TMin plus permissif pour éviter les auto-intersections
         shadowRayDesc.TMin = 0.1;
         shadowRayDesc.TMax = maxDist;
 
@@ -288,29 +353,26 @@ float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float 
     float3 sunColor = float3(0.0);
     float3 shadowColor = float3(1.0);
 
-    if (numShadowSamples > 1 && NdotL > 0.001) {
-        float3 accumSunColor = float3(0.0);
+    float cloudShadow = calculateCloudShadow(P, sunDir, camera.time);
+
+    if (numShadowSamples > 1 && NdotL > 0.001 && cloudShadow > 0.001) {
         float3 accumShadow = float3(0.0);
         
         float3 T_sun, B_sun;
         getTangentSpace(sunDir, T_sun, B_sun);
         
-        // Spirale de Fibonacci rotatée par pixel pour un échantillonnage uniforme et sans bande
+        float adaptiveConeAngle = lerp(0.20f, SUN_CONE_ANGLE, cloudShadow);
         const float GOLDEN_ANGLE = 2.39996323;
         float randomRotation = next_rand(seed) * 2.0 * PI;
         
         for (int i = 0; i < numShadowSamples; ++i) {
             float r = sqrt((float(i) + 0.5) / float(numShadowSamples));
             float theta = i * GOLDEN_ANGLE + randomRotation;
-            float sin_angle = r * sin(SUN_CONE_ANGLE);
+            float sin_angle = r * sin(adaptiveConeAngle);
             float cos_angle = sqrt(1.0 - sin_angle * sin_angle);
             
             float3 offset = float3(cos(theta) * sin_angle, sin(theta) * sin_angle, cos_angle);
             float3 L_sample = normalize(orient_to_world(offset, sunDir, T_sun, B_sun));
-            
-            float2 sampleUV = dirToEquirectangularUV(L_sample);
-            // On utilise le niveau de mipmap (ex: Mip 1.0) pour profiter du flou et filtrer la zone lumineuse du cône
-            accumSunColor += backgroundTexture.SampleLevel(sampleUV, 1.0).xyz * ENVIRONMENT_INTENSITY;
             
             if (dot(N, L_sample) > 0.001) {
                 accumShadow += shadow_intensity(P, N, L_sample, 10000.0);
@@ -318,22 +380,22 @@ float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float 
                 accumShadow += float3(1.0);
             }
         }
-        sunColor = accumSunColor / float(numShadowSamples);
+        sunColor = camera.sunColor.rgb;
         shadowColor = accumShadow / float(numShadowSamples);
     } else {
-        float2 sunUV = dirToEquirectangularUV(sunDir);
-        sunColor = backgroundTexture.SampleLevel(sunUV, 0.0).xyz * ENVIRONMENT_INTENSITY * 0.0002;
-        if (NdotL > 0.001) {
+        sunColor = camera.sunColor.rgb;
+        if (NdotL > 0.001 && cloudShadow > 0.001) {
             shadowColor = shadow_intensity(P, N, sunDir, 10000.0);
+        } else {
+            shadowColor = float3(1.0);
         }
     }
     
     float3 Lo = float3(0.0);
     
-    // Si l'objet n'est pas caché du soleil
-    if (any(shadowColor < 0.999) && NdotL > 0.0)
+    if (any(shadowColor < 0.999) && NdotL > 0.0 && cloudShadow > 0.001)
     {
-        float3 radiance = sunColor * (1.0 - shadowColor);
+        float3 radiance = sunColor * (1.0 - shadowColor) * cloudShadow;
         
         float3 F0 = lerp(float3(0.04), albedoFactor, metallicFactor);
         float3 F = fresnelSchlickRoughness(max(dot(H, V), 0.0), F0, roughnessFactor);
@@ -348,27 +410,24 @@ float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float 
         float3 kS = F;
         float3 kD = (float3(1.0) - kS) * (1.0 - metallicFactor);
 
-        
-        // On ajoute la partie spéculaire et diffuse de la lumière analytique
         Lo += ((kD * albedoFactor / PI) * NdotL + specular * NdotL) * radiance;
     }
 
-    // --- LUMIÈRE AMBIANTE (Ciel HDRI) ---
-    float2 irradianceUV = dirToEquirectangularUV(N);
-    // On échantillonne un niveau de MipMap élevé (ex: Mip 6 ou 7) pour flouter le décor et obtenir l'irradiance
-    float3 irradiance = backgroundTexture.SampleLevel(irradianceUV, 6.0).xyz * ENVIRONMENT_INTENSITY;
-    float3 F0_amb = float3(0.04);
-    F0_amb = lerp(F0_amb, albedoFactor, metallicFactor);
-    float3 F_amb = fresnelSchlick(max(dot(N, V), 0.0), F0_amb);
-    float3 kS_amb = F_amb;
-    float3 kD_amb = (1.0 - kS_amb) * (1.0 - metallicFactor);
-    // Éclairage diffus provenant de l'arrière-plan
-    float3 diffuse = kD_amb * albedoFactor * irradiance;
+    float skyVisibility = calculate_rtao(P, N, seed);
 
-    return Lo + diffuse + emission;
+    // Calcul irradiance
+    float3 irradiance = prefilteredSkyMap.SampleLevel(N, 6.0).rgb;
+    
+    // Calcul PBR Diffus
+    float3 F0_amb = lerp(float3(0.04), albedoFactor, metallicFactor);
+    float3 F_amb = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0_amb, roughnessFactor);
+    float3 kS_amb = F_amb;
+    float3 kD_amb = (float3(1.0) - kS_amb) * (1.0 - metallicFactor);
+    float3 ambientDiffuse = kD_amb * albedoFactor * irradiance * skyVisibility;
+
+    return Lo + ambientDiffuse + emission;
 }
 
-// Projection équirectangulaire (Map HDR panoramique) : Direction L -> UV [0,1]x[0,1]
 float2 dirToEquirectangularUV(float3 L) {
     float3 d = normalize(L);
     const float M_PI = 3.14159265358979323846;
@@ -399,7 +458,6 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
         if (dot(N, L) <= 0.0) continue;
 
         RayDesc reflectionRayDesc;
-        // Biais pour éviter que le reflet ne percute la surface elle-même (Acné de reflet)
         float bias = 0.1;
         reflectionRayDesc.Origin = P + N * bias;
         reflectionRayDesc.Direction = L;
@@ -440,9 +498,10 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
 
             sampleColor = intersectionColor.rgb;
         } else {
-            float2 bgUV = dirToEquirectangularUV(reflectionRayDesc.Direction);
-            float lod = roughnessFactor * 6.0;
-            sampleColor = backgroundTexture.SampleLevel(bgUV, lod).xyz * ENVIRONMENT_INTENSITY;
+            float maxLod = 5.0; // (Nombre total de mips - 1)
+            float lod = roughnessFactor * maxLod;
+            
+            sampleColor = prefilteredSkyMap.SampleLevel(reflectionRayDesc.Direction, lod).rgb;
             accumulatedRayLength += 10000.0;
         }
 

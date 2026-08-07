@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <glm/gtc/quaternion.hpp>
 
 #include "vulkan_app.hpp"
 #include "ffx-mgr.hh"
@@ -20,6 +21,8 @@ constexpr bool enableValidationLayers = true;
 
 #ifdef _WIN32
 #include <windows.h>
+
+#include "logic_engine.hh"
 
 void sleep_ms(DWORD milliseconds)
 {
@@ -51,8 +54,9 @@ static void framebufferResizeCallback(GLFWwindow *window, int width, int height)
     app->framebufferResized = true;
 }
 
-void VulkanApp::init()
+void VulkanApp::init(LogicEngine* logic)
 {
+    logicEngine = logic;
     initWindow();
     PhysicsWorld::global_init();
     physicsWorld = PhysicsWorld::create();
@@ -65,6 +69,14 @@ void VulkanApp::run()
     cleanup();
 }
 
+enum class PlayerAnimation : int {
+    BindPose  = -1,
+    Landing   = 0,
+    Running   = 1,
+    Sprinting = 2,
+    Jumping   = 3
+};
+
 // process all input: query GLFW whether relevant keys are pressed/released this frame and react accordingly
 // ---------------------------------------------------------------------------------------------------------
 void VulkanApp::processInput(GLFWwindow *window)
@@ -73,13 +85,12 @@ void VulkanApp::processInput(GLFWwindow *window)
     static int windowedWidth, windowedHeight, windowedPosX, windowedPosY;
     
     static bool wasGrounded = true;
-    static int currentAnimIndex = -1; // -1: bind pose / idle, 0: landing, 1: running, 2: jumping/air
+    static PlayerAnimation currentAnim = PlayerAnimation::BindPose;
     static float animStartTime = 0.0f;
 
     static float lastJumpTime = 0.f;
 
     PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
-    glm::vec3 vel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
     float currentTime = static_cast<float>(glfwGetTime());
 
     // Détection dynamique du sol par Raycast vers le bas (ignore le corps du joueur)
@@ -112,32 +123,34 @@ void VulkanApp::processInput(GLFWwindow *window)
     }
 
     if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-        if (isGrounded && currentAnimIndex != 2 && currentAnimIndex != 0 && currentTime - lastJumpTime > .5f) {
+        if (isGrounded && currentAnim != PlayerAnimation::Jumping && currentAnim != PlayerAnimation::Landing && currentTime - lastJumpTime > .5f) {
             physicsWorld->add_impulse(physicsEntities[1].physicsBodyId, glm::vec3(0.f, 10000.f, 0.f));
             isGrounded = false;
             lastJumpTime = currentTime;
         }
-        if (currentAnimIndex != 2) {
-            currentAnimIndex = 2;
+        if (currentAnim != PlayerAnimation::Jumping) {
+            currentAnim = PlayerAnimation::Jumping;
             animStartTime = currentTime;
         }
     }
 
     if (!wasGrounded && isGrounded) {
-        // Atterissage au sol: déclenche l'animation 0 une seule fois
-        currentAnimIndex = 0;
+        // Atterissage au sol: déclenche l'animation 0 (Landing) une seule fois
+        currentAnim = PlayerAnimation::Landing;
         animStartTime = currentTime;
-    } else if (!isGrounded && currentAnimIndex != 2) {
-        // En l'air: déclenche l'animation 2 une seule fois
-        currentAnimIndex = 2;
+    } else if (!isGrounded && currentAnim != PlayerAnimation::Jumping) {
+        // En l'air: déclenche l'animation 3 (Jumping) une seule fois
+        currentAnim = PlayerAnimation::Jumping;
         animStartTime = currentTime;
     }
 
     bool isMoving = false;
+    bool isSprinting = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+
     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
     {   
         glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
-        float speed = 10.0f;
+        float speed = isSprinting ? 12.5f : 10.0f;
         
         glm::vec3 rayOrigin = pose.position + dir * 0.5f + glm::vec3(0.0f, 0.5f, 0.0f);
         glm::vec3 rayDir = glm::vec3(0.0f, -1.0f, 0.0f);
@@ -148,7 +161,7 @@ void VulkanApp::processInput(GLFWwindow *window)
         bool groundAhead = physicsWorld->raycast(rayOrigin, rayDir, 1.5f, hitDist, hitNormal, hitBody, physicsEntities[1].physicsBodyId);
 
         glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
-        if (groundAhead && currentAnimIndex != 0 && currentAnimIndex != 2)
+        if (groundAhead && currentAnim != PlayerAnimation::Landing && currentAnim != PlayerAnimation::Jumping)
         {
             physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(dir.x * speed, currentVel.y, dir.z * speed));
             isMoving = true;
@@ -162,7 +175,7 @@ void VulkanApp::processInput(GLFWwindow *window)
     {
         PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
         glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
-        float speed = 10.0f;
+        float speed = isSprinting ? 12.5f : 10.0f;
         
         glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
         physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(-dir.x * speed, currentVel.y, -dir.z * speed));
@@ -176,7 +189,7 @@ void VulkanApp::processInput(GLFWwindow *window)
         physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, initialPose);
         physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(0.0f));
 
-        currentAnimIndex = -1;
+        currentAnim = PlayerAnimation::BindPose;
     }
     else {
         glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
@@ -184,37 +197,47 @@ void VulkanApp::processInput(GLFWwindow *window)
         physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(currentVel.x * dampingFactor, currentVel.y, currentVel.z * dampingFactor));
     }
 
+    PlayerAnimation targetMoveAnim = isSprinting ? PlayerAnimation::Sprinting : PlayerAnimation::Running;
+
     if (isGrounded) {
-        if (currentAnimIndex == 0) {
-            float animDuration = models[1]->getAnimationDuration(0);
+        if (currentAnim == PlayerAnimation::Landing) {
+            float animDuration = models[1]->getAnimationDuration(static_cast<uint32_t>(PlayerAnimation::Landing));
             if (currentTime - animStartTime >= animDuration) {
                 if (isMoving) {
-                    currentAnimIndex = 1;
+                    currentAnim = targetMoveAnim;
                     animStartTime = currentTime;
                 } else {
-                    currentAnimIndex = -1;
+                    currentAnim = PlayerAnimation::BindPose;
                 }
             }
         } else if (isMoving) {
-            if (currentAnimIndex != 1) {
-                currentAnimIndex = 1;
+            if (currentAnim != targetMoveAnim) {
+                currentAnim = targetMoveAnim;
                 animStartTime = currentTime;
             }
-        } else if (currentAnimIndex != 0) {
-            currentAnimIndex = -1;
+        } else if (currentAnim != PlayerAnimation::Landing) {
+            currentAnim = PlayerAnimation::BindPose;
         }
     }
 
-    if (currentAnimIndex == 2) {
-        float elapsedTime = currentTime - animStartTime;
-        models[1]->updateAnimation(2, elapsedTime, false);
-    } else if (currentAnimIndex == 0) {
-        float elapsedTime = currentTime - animStartTime;
-        models[1]->updateAnimation(0, elapsedTime, false);
-    } else if (currentAnimIndex == 1) {
-        models[1]->updateAnimation(1, currentTime, true);
-    } else {
-        models[1]->resetToBindPose();
+    float elapsedTime = currentTime - animStartTime;
+    switch (currentAnim) {
+        case PlayerAnimation::Jumping:
+            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Jumping), elapsedTime, false);
+            break;
+        case PlayerAnimation::Landing:
+            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Landing), elapsedTime, false);
+            break;
+        case PlayerAnimation::Running:
+            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Running), elapsedTime, true);
+            break;
+        case PlayerAnimation::Sprinting:
+            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Sprinting), elapsedTime, true);
+            break;
+        case PlayerAnimation::BindPose:
+        default:
+            models[1]->resetToBindPose();
+            break;
     }
 
     wasGrounded = isGrounded;
@@ -236,10 +259,26 @@ void VulkanApp::processInput(GLFWwindow *window)
         isFullscreen = !isFullscreen;
         sleep_ms(100);
     }
+
+    static bool tabPressedLastFrame = false;
+    bool tabPressed = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS;
+
+    if (tabPressed && !tabPressedLastFrame) {
+        uiMode = !uiMode;
+        if (uiMode) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        } else {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        }
+    }
+    tabPressedLastFrame = tabPressed;
+
 }
 
 // Mouse callback (Logique FPV / First Person View)
 void VulkanApp::mouse(double xposIn, double yposIn) {
+    if (uiMode) return;
+
     static double lastX = WIDTH / 2.0;
     static double lastY = HEIGHT / 2.0;
     static bool firstMouse = true;
@@ -256,7 +295,7 @@ void VulkanApp::mouse(double xposIn, double yposIn) {
     lastX = xposIn;
     lastY = yposIn;
 
-    camera.ProcessMouseMovement(xoffset, yoffset);
+    camera->ProcessMouseMovement(xoffset, yoffset);
 }
 
 
@@ -270,7 +309,7 @@ void VulkanApp::initWindow()
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+    window = glfwCreateWindow(WIDTH, HEIGHT, "RT App", nullptr, nullptr);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
     glfwSetCursorPosCallback(window, mouseCallback);
@@ -280,13 +319,6 @@ void VulkanApp::initWindow()
     {
         throw std::runtime_error("Échec de la création de la fenêtre GLFW");
     }
-
-    camera = Camera(
-        glm::vec3(2.0f, 2.0f, 6.0f), // Position
-        glm::vec3(0.0f, 1.0f, 0.0f)  // World Up
-    );
-
-    camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
 }
 
 void VulkanApp::initVulkan()
@@ -324,6 +356,8 @@ void VulkanApp::initVulkan()
     createDescriptorPool();
     createDescriptorSets();
     createSyncObjects();
+
+    initImGui();
 }
 
 void VulkanApp::createInstance()
@@ -421,11 +455,11 @@ void VulkanApp::pickPhysicalDevice()
 
     bool deviceFound = false;
 
-    for (const auto &device : physicalDevices)
+    for (auto &device : physicalDevices)
     {
         if (isDeviceSuitable(device, requiredDeviceExtension))
         {
-            physicalDevice = device;
+            physicalDevice = std::move(device);
             msaaSamples = vk::SampleCountFlagBits::e1;
             deviceFound = true;
             break;
@@ -565,7 +599,7 @@ void VulkanApp::createImageViews()
 void VulkanApp::createDescriptorSetLayout()
 {
     std::array global_bindings = {
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eCompute, nullptr),
         vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
         vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
         vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
@@ -1294,8 +1328,13 @@ void VulkanApp::recreateSwapChain()
 
 void VulkanApp::cleanup()
 {
+    cleanupImGui();
+
     delete ffxMgr;
     ffxMgr = nullptr;
+
+    physicsEntities.clear();
+    models.clear();
 
     physicsWorld.reset();
     PhysicsWorld::global_shutdown();
@@ -1382,4 +1421,92 @@ void VulkanApp::generateMipmaps(
     barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
 
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
+}
+
+void VulkanApp::initImGui()
+{
+    std::vector<vk::DescriptorPoolSize> poolSizes = {
+        { vk::DescriptorType::eCombinedImageSampler, 1000 },
+        { vk::DescriptorType::eSampledImage, 1000 },
+        { vk::DescriptorType::eStorageImage, 1000 },
+        { vk::DescriptorType::eUniformBuffer, 1000 },
+        { vk::DescriptorType::eStorageBuffer, 1000 }
+    };
+
+    vk::DescriptorPoolCreateInfo poolInfo{
+        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        .maxSets = 1000 * static_cast<uint32_t>(poolSizes.size()),
+        .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
+        .pPoolSizes = poolSizes.data()
+    };
+
+    imguiDescriptorPool = vk::raii::DescriptorPool(device, poolInfo);
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    ImGui::StyleColorsDark();
+
+    ImGui_ImplGlfw_InitForVulkan(window, true);
+
+    VkFormat colorFormat = static_cast<VkFormat>(swapChainSurfaceFormat.format);
+
+    VkPipelineRenderingCreateInfoKHR pipelineRenderingCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &colorFormat
+    };
+
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance = *instance;
+    init_info.PhysicalDevice = *physicalDevice;
+    init_info.Device = *device;
+    init_info.QueueFamily = queueIndex;
+    init_info.Queue = *graphicsQueue;
+    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.DescriptorPool = *imguiDescriptorPool;
+    init_info.MinImageCount = static_cast<uint32_t>(swapChainImages.size());
+    init_info.ImageCount = static_cast<uint32_t>(swapChainImages.size());
+    
+    // Configuration du Dynamic Rendering sous PipelineInfoMain (ImGui 1.92+)
+    init_info.UseDynamicRendering = true;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = pipelineRenderingCreateInfo;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+    ImGui_ImplVulkan_Init(&init_info);
+}
+
+void VulkanApp::cleanupImGui()
+{
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    imguiDescriptorPool = nullptr;
+}
+
+void VulkanApp::renderUI()
+{
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    // Exemple de fenêtre de contrôle des paramètres
+    ImGui::Begin("Panneau de Contrôle");
+    
+    ImGui::Text("FPS: %.1f (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+    ImGui::Separator();
+
+    // Mode de saisie
+    ImGui::Text("Appuie sur TAB pour basculer la souris (%s)", uiMode ? "Mode UI" : "Mode Caméra");
+
+    float h = static_cast<float>(logicEngine->hourUTC);
+    if (ImGui::SliderFloat("Heure (UTC)", &h, 0.0f, 23.99f, "%.2f h")) {
+        logicEngine->hourUTC = static_cast<double>(h);
+    }
+
+    ImGui::End();
+
+    ImGui::Render();
 }

@@ -8,12 +8,13 @@ struct CameraUBO {
     float4x4 proj;
     float4x4 prevViewProj;
     float4 camPos;
-    float4 lightsPos[2];
     float time;
+    float4 sunDir;
+    float4 sunColor;
 };
 
 [vk::binding(0, 0)] ConstantBuffer<CameraUBO> camera;
-[vk::binding(3, 0)] Sampler2D backgroundTexture;
+[vk::binding(3, 0)] SamplerCube prefilteredSkyMap;
 
 [shader("vertex")]
 VSOutput vertMain(uint vertexID : SV_VertexID) {
@@ -40,17 +41,6 @@ VSOutput vertMain(uint vertexID : SV_VertexID) {
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET0 {
-    float3 v = normalize(vertIn.rayDir);
-    
-    // Convert direction to spherical coordinates
-    float2 uv = float2(atan2(v.z, v.x), asin(v.y));
-    
-    // Convert from [-pi, pi] and [-pi/2, pi/2] to [0, 1]
-    uv *= float2(0.15915494309, 0.31830988618);
-    uv += 0.5;
-    
-    // Vulkan texture coordinates: Y points downwards.
-    uv.y = 1.0 - uv.y;
-    
-    return backgroundTexture.SampleLevel(uv, 0);
+    float3 color = prefilteredSkyMap.SampleLevel(normalize(vertIn.rayDir), 0.0).rgb;
+    return float4(color, 1.0);
 }

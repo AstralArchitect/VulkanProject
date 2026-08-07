@@ -118,20 +118,24 @@ namespace VulkanUtils {
         vk::ImageTiling tiling,
         vk::ImageUsageFlags usage,
         vk::MemoryPropertyFlags properties,
-        vk::SampleCountFlagBits numSamples,
+        vk::SampleCountFlagBits numSamples = vk::SampleCountFlagBits::e1,
         uint32_t mipLevels = 1)
     {
-        vk::ImageCreateInfo imageInfo{
-            .imageType = vk::ImageType::e2D,
-            .format = format,
-            .extent = {width, height, 1},
-            .mipLevels = mipLevels,
-            .arrayLayers = 1,
-            .samples = numSamples,
-            .tiling = tiling,
-            .usage = usage,
-            .sharingMode = vk::SharingMode::eExclusive
-        };
+        if (static_cast<uint32_t>(numSamples) == 0) {
+            numSamples = vk::SampleCountFlagBits::e1;
+        }
+
+        vk::ImageCreateInfo imageInfo{};
+        imageInfo.imageType = vk::ImageType::e2D;
+        imageInfo.format = format;
+        imageInfo.extent = vk::Extent3D{width, height, 1};
+        imageInfo.mipLevels = mipLevels;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = numSamples;
+        imageInfo.tiling = tiling;
+        imageInfo.usage = usage;
+        imageInfo.sharingMode = vk::SharingMode::eExclusive;
+        imageInfo.initialLayout = vk::ImageLayout::eUndefined;
 
         vk::raii::Image image(device, imageInfo);
 
@@ -275,15 +279,40 @@ namespace VulkanUtils {
         std::vector<float> pixels; // Données float 32 bits (RGBA)
     };
 
-    struct HDRTexture {
+    struct BackgroundTexture {
         vk::raii::Image image = nullptr;
         vk::raii::DeviceMemory imageMemory = nullptr;
         vk::raii::ImageView imageView = nullptr;
         vk::raii::Sampler sampler = nullptr;
+
+        // Vues de stockage 2DArray par Mip Level pour le Compute Shader
+        std::vector<vk::raii::ImageView> mipViews;
+
+        // Ressources du Pipeline Compute pour le pré-filtrage
+        vk::raii::DescriptorPool computeDescriptorPool = nullptr;
+        vk::raii::DescriptorSetLayout computeDescriptorSetLayout = nullptr;
+        vk::raii::PipelineLayout computePipelineLayout = nullptr;
+        vk::raii::Pipeline computePipeline = nullptr;
+        std::vector<vk::raii::DescriptorSet> computeDescriptorSets;
+
         uint32_t width = 0;
         uint32_t height = 0;
-        uint32_t mipLevels = 1;
-        glm::vec3 sunDir = glm::vec3(0.0f, 1.0f, 0.0f);
+        uint32_t mipLevels = 6;
+        glm::vec3 sunDir = glm::vec3(0.0f, 0.5f, 1.0f);
+
+        void create(
+            const vk::raii::Device& device,
+            const vk::raii::PhysicalDevice& physicalDevice,
+            const vk::raii::CommandPool& commandPool,
+            const vk::raii::Queue& graphicsQueue,
+            const vk::raii::DescriptorSetLayout& cameraSetLayout,
+            uint32_t cubeMapSize = 128,
+            vk::Format format = vk::Format::eR16G16B16A16Sfloat,
+            const std::string& shaderSpvPath = "builddir/sky_prefilter.spv");
+
+        void update(
+            const vk::raii::CommandBuffer& cmd,
+            const vk::raii::DescriptorSet& cameraDescriptorSet);
     };
 
     void generateMipmaps(
@@ -295,16 +324,13 @@ namespace VulkanUtils {
         int32_t texHeight,
         uint32_t mipLevels);
 
-    // Charge les données brutes CPU d'un fichier .hdr (RGBA float 32 bits)
-    HDRImageData loadHDRData(const std::string& filepath);
-
-    // Charge un fichier .hdr et crée directement la texture Vulkan (GPU Image + Memory + ImageView)
-    HDRTexture loadHDRTexture(
+    BackgroundTexture createProceduralSkyCubemap(
         const vk::raii::Device& device,
         const vk::raii::PhysicalDevice& physicalDevice,
         const vk::raii::CommandPool& commandPool,
         const vk::raii::Queue& graphicsQueue,
-        const std::string& filepath,
-        vk::Format format = vk::Format::eR32G32B32A32Sfloat);
-}
+        const vk::raii::DescriptorSetLayout& cameraSetLayout,
+        uint32_t cubeMapSize = 128,
+        vk::Format format = vk::Format::eR16G16B16A16Sfloat);
 
+}

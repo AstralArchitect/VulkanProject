@@ -110,18 +110,11 @@ uint32_t VulkanApp::chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &su
 
 vk::Format VulkanApp::findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
 {
-    for (const auto format : candidates)
+    if (!*physicalDevice)
     {
-        vk::FormatProperties props = physicalDevice.getFormatProperties(format);
-        if (
-            ((tiling == vk::ImageTiling::eLinear) && ((props.linearTilingFeatures & features) == features)) ||
-            ((tiling == vk::ImageTiling::eOptimal) && ((props.optimalTilingFeatures & features) == features)))
-        {
-            return format;
-        }
+        throw std::runtime_error("findSupportedFormat called with null physical device! Ensure pickPhysicalDevice() selected a valid device.");
     }
-
-    throw std::runtime_error("failed to find supported format!");
+    return VulkanUtils::findSupportedFormat(physicalDevice, candidates, tiling, features);
 }
 
 vk::Format VulkanApp::findDepthFormat()

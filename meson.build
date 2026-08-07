@@ -20,6 +20,8 @@ cpp_dir = 'src/'
 
 cpp_sources = [
     cpp_dir + 'main.cc',
+
+    cpp_dir + 'draw_funcs.cc',
     cpp_dir + 'applicationInitFunctions.cc',
     cpp_dir + 'initUtilities.cc',
     cpp_dir + 'vulkan_utils.cc',
@@ -29,7 +31,9 @@ cpp_sources = [
     cpp_dir + 'camera.cpp',
     cpp_dir + 'ffx-mgr.cc',
     cpp_dir + 'jolt_physics.cc',
-    cpp_dir + 'skin.cc'
+    cpp_dir + 'skin.cc',
+    cpp_dir + 'sun_calc.cc',
+    cpp_dir + 'logic_engine.cc'
 ]
 
 sources = cpp_sources
@@ -42,13 +46,15 @@ tinygltf_dep = dependency('tinygltf')
 
 jolt_dep = dependency('Jolt')
 
+imgui_dep = dependency('imgui')
+
 include_dir = include_directories('Include')
 
 executable(
     'main',
     sources: sources,
     include_directories: include_dir,
-    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinygltf_dep, jolt_dep],
+    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinygltf_dep, jolt_dep, imgui_dep],
 )
 
 slangc = find_program('slangc', required: true)
@@ -110,6 +116,24 @@ custom_target(
     'compile_slang_skinning',
     input: 'res/shaders/compute/skinning.slang',
     output: 'skinning.spv',
+    command: [
+        slangc,
+        '@INPUT@',
+        '-target', 'spirv',
+        '-profile', 'spirv_1_4',
+        '-emit-spirv-directly',
+        '-fvk-use-entrypoint-name',
+        '-entry', 'main',
+        '-o', '@OUTPUT@',
+    ],
+    build_by_default: true,
+)
+
+custom_target(
+    'compile_slang_sky_prefilter',
+    input: 'res/shaders/compute/sky_prefilter.slang',
+    output: 'sky_prefilter.spv',
+    depend_files: files('res/shaders/compute/clouds.slang'),
     command: [
         slangc,
         '@INPUT@',

@@ -33,6 +33,10 @@ import vulkan_hpp;
 
 #include "physics_world.hpp"
 
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_vulkan.h"
+
 // --- Constantes et variables globales ---
 static constexpr uint32_t WIDTH = 800;
 static constexpr uint32_t HEIGHT = 600;
@@ -41,20 +45,47 @@ extern const int MAX_FRAMES_IN_FLIGHT;
 const std::string MODEL_PATH = "res/models/horloge.glb";
 const std::string TEXTURE_PATH = "res/textures/viking_room.png";
 
+#include "physicsEntity.h" // Definition unique de struct PhysicsEntity
+
+class LogicEngine;
+
+extern std::vector<std::unique_ptr<GltfModel>> models;
+extern std::vector<PhysicsEntity> physicsEntities;
+
 class VulkanApp
 {
 public:
     bool framebufferResized = false;
 
-    void init();
+    void init(LogicEngine*);
     void run();
-private:
-    // structs 
-    struct PhysicsEntity {
-        GltfModel* graphicModel;
-        JPH::BodyID physicsBodyId;
-    };
 
+    float deltaTime = 0.0f;
+    float lastFrame = 0.0f;
+
+    std::unique_ptr<PhysicsWorld> physicsWorld;
+
+    void setCamera(Camera* cam) {
+        camera = cam;
+    }
+
+    vk::raii::Device* getDevicePtr() { return &device; }
+    vk::raii::PhysicalDevice* getPhysDevicePtr() { return &physicalDevice; }
+    vk::raii::CommandPool* getCommandPoolPtr() { return &commandPool; }
+    vk::raii::Queue* getGraphicsQueuePtr() { return &graphicsQueue; }
+    TextureManager* getTextMgrPtr() { return &textureManager; }
+    SkinMgr* getSkinMgrPtr() { return skinMgr.get(); }
+
+    bool uiMode = false;
+
+private:
+    LogicEngine* logicEngine = nullptr;
+
+    vk::raii::DescriptorPool imguiDescriptorPool = nullptr;
+    void initImGui();
+    void cleanupImGui();
+    void renderUI();
+    
     struct CameraUBO {
         alignas(16) glm::mat4 view;
         alignas(16) glm::mat4 proj;
@@ -62,6 +93,7 @@ private:
         alignas(16) glm::vec4 camPos;        // vec4
         alignas(16) float time;
         alignas(16) glm::vec4 sunDir;
+        glm::vec4 sunColor;
     };
 
     std::vector<const char *> requiredDeviceExtension = {
@@ -101,9 +133,6 @@ private:
     vk::raii::CommandPool commandPool = nullptr;
     std::vector<vk::raii::CommandBuffer> commandBuffers;
 
-    std::vector<std::unique_ptr<GltfModel>> models;
-    std::vector<PhysicsEntity> physicsEntities;
-
     TextureManager textureManager;
     std::unique_ptr<SkinMgr> skinMgr;
 
@@ -126,12 +155,9 @@ private:
     vk::raii::DeviceMemory colorImageMemory = nullptr;
     vk::raii::ImageView colorImageView = nullptr;
 
-    VulkanUtils::HDRTexture backgroundTexture;
+    VulkanUtils::BackgroundTexture backgroundTexture;
 
-    Camera camera;
-
-    float deltaTime;
-    float lastFrame;
+    Camera* camera;
 
     std::vector<vk::raii::Buffer> cameraUniformBuffers;
     std::vector<vk::raii::DeviceMemory> cameraUniformBuffersMemory;
@@ -163,8 +189,6 @@ private:
     uint32_t frameIndex = 0;
 
     FFXMgr* ffxMgr = nullptr;
-
-    std::unique_ptr<PhysicsWorld> physicsWorld;
 
     // Méthodes d'initialisation
     void initWindow();
