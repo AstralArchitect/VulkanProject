@@ -4,6 +4,9 @@
 #include "logic_engine.hh"
 #include <algorithm>
 
+#include "imgui.h"
+#include "imgui_impl_vulkan.h"
+
 void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
 {
     auto &commandBuffer = commandBuffers[frameIndex];
@@ -30,7 +33,7 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
             {}, blasBarrier, nullptr, nullptr);
     }
 
-    vk::BufferDeviceAddressInfo instancesAddrInfo{.buffer = *instancesBuffer};
+    vk::BufferDeviceAddressInfo instancesAddrInfo{.buffer = *instancesBuffers[frameIndex]};
     vk::DeviceAddress instancesDeviceAddress = device.getBufferAddress(instancesAddrInfo);
     vk::AccelerationStructureGeometryInstancesDataKHR instancesData{
         .arrayOfPointers = vk::False,
@@ -39,14 +42,14 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
         .geometryType = vk::GeometryTypeKHR::eInstances,
         .geometry = instancesData};
 
-    vk::BufferDeviceAddressInfo scratchAddrInfo{.buffer = *tlasScratchBuffer};
+    vk::BufferDeviceAddressInfo scratchAddrInfo{.buffer = *tlasScratchBuffers[frameIndex]};
     vk::DeviceAddress scratchAddress = device.getBufferAddress(scratchAddrInfo);
 
     vk::AccelerationStructureBuildGeometryInfoKHR buildInfo{
         .type = vk::AccelerationStructureTypeKHR::eTopLevel,
         .flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild,
         .mode = vk::BuildAccelerationStructureModeKHR::eBuild,
-        .dstAccelerationStructure = *tlasHandle,
+        .dstAccelerationStructure = *tlasHandles[frameIndex],
         .geometryCount = 1,
         .pGeometries = &geometry,
         .scratchData = scratchAddress};
@@ -226,7 +229,9 @@ void VulkanApp::recordCommandBuffer(uint32_t imageIndex)
     
     updateCompositionDescriptorSet(imageIndex, frameIndex);
 
-    // <-- CES LIGNES MANQUAIENT POUR DESSINER LA SCÈNE 3D !
+    uint32_t isMenuOpen = uiMode ? 1 : 0;
+    commandBuffer.pushConstants<uint32_t>(*compositionPipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, isMenuOpen);
+
     commandBuffer.bindDescriptorSets(
         vk::PipelineBindPoint::eCompute,
         *compositionPipelineLayout,
@@ -352,7 +357,7 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     // Camera and projection matrices (shared by all objects)
     glm::mat4 view = camera->GetViewMatrix();
     glm::mat4 proj = glm::perspective(
-        glm::radians(45.0f),
+        glm::radians(camera->Zoom),
         static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height),
         0.1f, 1500.0f);
 
@@ -367,10 +372,9 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     ubo.camPos = glm::vec4(camera->Position, 1.f);
     ubo.time = time;
     
-    double latitude = 48.8566;
-    double longitude = 2.3522;
-
-    glm::vec3 sunDir = SunCalc::calculateSunDirection(logicEngine->year, logicEngine->month, logicEngine->day, logicEngine->hourUTC, latitude, longitude);
+    glm::vec3 sunDir = SunCalc::calculateSunDirection(
+        logicEngine->year, logicEngine->month, logicEngine->day, 
+        logicEngine->hourUTC, logicEngine->latitude, logicEngine->longitude);
 
     ubo.sunDir = glm::vec4(sunDir, 0.0f);
     float sunElevation = std::max(ubo.sunDir.y, 0.0f);
@@ -378,6 +382,8 @@ void VulkanApp::updateUniformBuffer(uint32_t currentImage)
     glm::vec3 extinction = glm::exp(-glm::vec3(0.15f, 0.3f, 0.65f) * opticalDepth);
     // Couleur et intensité finale du soleil directe (HDR)
     ubo.sunColor = glm::vec4(glm::vec3(12.0f, 11.0f, 9.0f) * extinction, 1.f);
+    ubo.enableReflections = logicEngine->enableReflections ? 1 : 0;
+    ubo.enableRtao = logicEngine->enableRtao ? 1 : 0;
 
     ffxMgr->updateConstantsBuffer(ubo.view, ubo.proj, previousViewProj);
 
@@ -392,6 +398,12 @@ void VulkanApp::drawFrame()
     deltaTime = currentFrame - lastFrame;
     lastFrame = currentFrame;
 
+    if (logicEngine->autoTimeCycle) {
+        logicEngine->hourUTC += (24.0 / 600.0) * static_cast<double>(deltaTime) * static_cast<double>(logicEngine->timeCycleSpeed);
+        if (logicEngine->hourUTC >= 24.0) logicEngine->hourUTC -= 24.0;
+        if (logicEngine->hourUTC < 0.0) logicEngine->hourUTC += 24.0;
+    }
+
     // On limite le deltaTime pour la physique
     float physicsDeltaTime = std::clamp(deltaTime, 0.0f, 0.1f);
 
@@ -399,7 +411,9 @@ void VulkanApp::drawFrame()
     // -----
     processInput(window);
 
-    physicsWorld->step(physicsDeltaTime);
+    if (!physicsPaused) {
+        physicsWorld->step(physicsDeltaTime * physicsSpeed);
+    }
 
     // Note: inFlightFences, presentCompleteSemaphores, and commandBuffers are
     // indexed by frameIndex,
@@ -437,7 +451,7 @@ void VulkanApp::drawFrame()
         entity.graphicModel->setModelTransform(objectMatrix);
     }
 
-    updateTlasInstances();
+    updateTlasInstances(frameIndex);
 
     commandBuffers[frameIndex].reset();
     recordCommandBuffer(imageIndex);

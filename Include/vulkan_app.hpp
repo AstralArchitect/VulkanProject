@@ -33,10 +33,6 @@ import vulkan_hpp;
 
 #include "physics_world.hpp"
 
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_vulkan.h"
-
 // --- Constantes et variables globales ---
 static constexpr uint32_t WIDTH = 800;
 static constexpr uint32_t HEIGHT = 600;
@@ -45,7 +41,7 @@ extern const int MAX_FRAMES_IN_FLIGHT;
 const std::string MODEL_PATH = "res/models/horloge.glb";
 const std::string TEXTURE_PATH = "res/textures/viking_room.png";
 
-#include "physicsEntity.h" // Definition unique de struct PhysicsEntity
+#include "physicsEntity.h"
 
 class LogicEngine;
 
@@ -77,6 +73,11 @@ public:
     SkinMgr* getSkinMgrPtr() { return skinMgr.get(); }
 
     bool uiMode = false;
+    bool physicsPaused = false;
+    float physicsSpeed = 1.0f;
+    int currentThemeIndex = 0;
+    float fpsHistory[100] = {0.0f};
+    int fpsHistoryOffset = 0;
 
 private:
     LogicEngine* logicEngine = nullptr;
@@ -94,6 +95,8 @@ private:
         alignas(16) float time;
         alignas(16) glm::vec4 sunDir;
         glm::vec4 sunColor;
+        uint32_t enableReflections;
+        uint32_t enableRtao;
     };
 
     std::vector<const char *> requiredDeviceExtension = {
@@ -172,19 +175,19 @@ private:
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
     std::vector<vk::raii::Fence> inFlightFences;
 
-    vk::raii::Buffer tlasBuffer = nullptr;
-    vk::raii::DeviceMemory tlasBufferMemory = nullptr;
-    vk::raii::Buffer tlasScratchBuffer = nullptr;
-    vk::raii::DeviceMemory tlasScratchBufferMemory = nullptr;
-    vk::raii::AccelerationStructureKHR tlasHandle = nullptr;
-    vk::raii::Buffer instancesBuffer = nullptr;
-    vk::raii::DeviceMemory instancesBufferMemory = nullptr;
-    void* instancesBufferMapped = nullptr;
-    uint32_t blasInstancesCount;
+    std::vector<vk::raii::Buffer> tlasBuffers;
+    std::vector<vk::raii::DeviceMemory> tlasBuffersMemory;
+    std::vector<vk::raii::Buffer> tlasScratchBuffers;
+    std::vector<vk::raii::DeviceMemory> tlasScratchBuffersMemory;
+    std::vector<vk::raii::AccelerationStructureKHR> tlasHandles;
+    std::vector<vk::raii::Buffer> instancesBuffers;
+    std::vector<vk::raii::DeviceMemory> instancesBuffersMemory;
+    std::vector<void*> instancesBuffersMapped;
+    uint32_t blasInstancesCount = 0;
 
-    vk::raii::Buffer instanceDataBuffer = nullptr;
-    vk::raii::DeviceMemory instanceDataBufferMemory = nullptr;
-    void* instanceDataBufferMapped = nullptr;
+    std::vector<vk::raii::Buffer> instanceDataBuffers;
+    std::vector<vk::raii::DeviceMemory> instanceDataBuffersMemory;
+    std::vector<void*> instanceDataBuffersMapped;
 
     uint32_t frameIndex = 0;
 
@@ -246,7 +249,7 @@ private:
     void loadModels();
 
     void createTlas();
-    void updateTlasInstances();
+    void updateTlasInstances(uint32_t currentFrame);
 
     void drawFrame();
     void updateUniformBuffer(uint32_t currentImage);

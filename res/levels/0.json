@@ -1,0 +1,67 @@
+{
+  "name": "Level 0 - Main Test Scene",
+  "version": "1.0",
+  "environment": {
+    "sun": {
+      "year": 2026,
+      "month": 9,
+      "day": 23,
+      "hourUTC": 8.0,
+      "latitude": 48.8566,
+      "longitude": 2.3522,
+      "autoTimeCycle": false,
+      "timeCycleSpeed": 1.0
+    },
+    "camera": {
+      "position": [0.0, 2.0, 6.0],
+      "lookAt": [0.0, 1.0, 0.0],
+      "fov": 45.0
+    },
+    "graphics": {
+      "enableReflections": true,
+      "enableRtao": true,
+      "ffxMaxSamples": 16
+    }
+  },
+  "entities": [
+    {
+      "id": 0,
+      "name": "World Ground",
+      "modelPath": "res/models/world.glb",
+      "transform": {
+        "position": [0.0, -10.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [10.0, 10.0, 10.0]
+      },
+      "physics": {
+        "enabled": true,
+        "motionType": "Static",
+        "shapeType": "Mesh",
+        "layer": "NON_MOVING",
+        "friction": 1.0,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 1,
+      "name": "Player Character",
+      "modelPath": "res/models/man.glb",
+      "isPlayer": true,
+      "transform": {
+        "position": [-3.0, 3.0, -3.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.5, 0.5, 0.5]
+      },
+      "physics": {
+        "enabled": true,
+        "motionType": "Dynamic",
+        "shapeType": "Box",
+        "layer": "MOVING",
+        "friction": 1.0,
+        "linearDamping": 0.1,
+        "motionQuality": "LinearCast",
+        "allowedDOFs": ["TranslationX", "TranslationY", "TranslationZ"]
+      }
+    }
+  ]
+}

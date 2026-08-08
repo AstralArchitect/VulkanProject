@@ -1,6 +1,7 @@
 #include "GLFW/glfw3.h"
 #include "model.hpp"
 #include "vulkan_utils.hpp"
+#include <stdexcept>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <tiny_gltf.h>
 #define TINYGLTF
@@ -26,6 +27,8 @@ void VulkanApp::loadModels()
 {
     if (logicEngine) {
         logicEngine->loadModels(this);
+    } else {
+        throw std::runtime_error("logic Engine not initialized !");
     }
 }
 

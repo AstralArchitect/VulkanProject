@@ -642,7 +642,7 @@ void FFXMgr::updateConstantsBuffer(glm::mat4 view, glm::mat4 proj, glm::mat4 pre
     constants.renderSize[0] = m_width;
     constants.renderSize[1] = m_height;
     constants.temporalStabilityFactor = 0.9f;
-    constants.maxSamples = 32;
+    constants.maxSamples = maxSamples;
 
     void* data = constantsBufferMemory.mapMemory(0, sizeof(FFXConstants));
     std::memcpy(data, &constants, sizeof(FFXConstants));

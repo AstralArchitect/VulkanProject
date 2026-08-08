@@ -81,6 +81,8 @@ public:
     uint32_t m_width;
     uint32_t m_height;
 
+    int maxSamples = 32;
+
     void updateReprojDescriptorSets(
         vk::ImageView inputRadiance,
         vk::ImageView inputDepth,

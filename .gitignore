@@ -1,5 +1,6 @@
 builddir/
 packagecache/
+subprojects/imgui/*
 tinygltf-*/
 glfw-*/
 glm-*/

@@ -22,6 +22,9 @@ struct CameraUBO {
     float time;
     float4 sunDir;
     float4 sunColor;
+    //graphsim settings
+    uint enableReflections;
+    uint enableRtao;
 };
 
 struct InstanceData {
@@ -82,10 +85,8 @@ static const float linear = 0.09f;
 static const float quadratic = 0.032f;
 static const float PI = 3.14159265359;
 static const float EPSILON = 0.001f;
-static const int NUM_SAMPLES = 1;
 static const int SHADOW_CONE_SAMPLES = 8;
 static const float SUN_CONE_ANGLE = 0.06f; // ~3.5 degrés d'angle pour le cône solaire (ombres douces)
-static const int RTAO_SAMPLES = 2;
 static const float rtaoMaxDist = 3.0;
 
 static const float ENVIRONMENT_INTENSITY = 1;
@@ -163,12 +164,16 @@ float3 sampleCosineHemisphere(float2 u) {
 
 
 float calculate_rtao(float3 P, float3 N, inout uint seed) {
+    if (camera.enableRtao == 0) {
+        return 1.0;
+    }
     float3 T, B;
     getTangentSpace(N, T, B);
 
     float accumulatedVisibility = 0.0;
+    const int rtaoSamples = 2;
 
-    for (int i = 0; i < RTAO_SAMPLES; ++i) {
+    for (int i = 0; i < rtaoSamples; ++i) {
         float2 u = float2(next_rand(seed), next_rand(seed));
         
         float3 localDir = sampleCosineHemisphere(u);
@@ -195,7 +200,7 @@ float calculate_rtao(float3 P, float3 N, inout uint seed) {
         }
     }
 
-    return accumulatedVisibility / float(RTAO_SAMPLES);
+    return accumulatedVisibility / float(rtaoSamples);
 }
 
 
@@ -437,6 +442,11 @@ float2 dirToEquirectangularUV(float3 L) {
 }
 
 float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor, float roughnessFactor, inout uint seed, out float outRayLength) {
+    if (camera.enableReflections == 0) {
+        outRayLength = 0.0;
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
     float3 V = normalize(camera.camPos.xyz - P);
     
     float3 accumulatedColor = float3(0.0);
@@ -447,7 +457,7 @@ float4 apply_reflection(float3 P, float3 N, float3 albedo, float metallicFactor,
     float3 Bitangent;
     getTangentSpace(N, Tangent, Bitangent);
 
-    const int num_samples = (roughnessFactor < .1f) ? 1 : NUM_SAMPLES;
+    const int num_samples = 1;
 
     for (int i = 0; i < num_samples; ++i) {
         float2 Xi = float2(next_rand(seed), next_rand(seed));

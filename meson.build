@@ -48,13 +48,15 @@ jolt_dep = dependency('Jolt')
 
 imgui_dep = dependency('imgui')
 
+nlohmann_json_dep = dependency('nlohmann_json', required: true)
+
 include_dir = include_directories('Include')
 
 executable(
     'main',
     sources: sources,
     include_directories: include_dir,
-    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinygltf_dep, jolt_dep, imgui_dep],
+    dependencies: [vulkan_dep, glfw_dep, glm_dep, tinygltf_dep, jolt_dep, imgui_dep, nlohmann_json_dep],
 )
 
 slangc = find_program('slangc', required: true)

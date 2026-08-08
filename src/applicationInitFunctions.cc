@@ -24,6 +24,12 @@ constexpr bool enableValidationLayers = true;
 
 #include "logic_engine.hh"
 
+#include "sun_calc.hh"
+
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_vulkan.h"
+
 void sleep_ms(DWORD milliseconds)
 {
     Sleep(milliseconds);
@@ -69,178 +75,19 @@ void VulkanApp::run()
     cleanup();
 }
 
-enum class PlayerAnimation : int {
-    BindPose  = -1,
-    Landing   = 0,
-    Running   = 1,
-    Sprinting = 2,
-    Jumping   = 3
-};
-
 // process all input: query GLFW whether relevant keys are pressed/released this frame and react accordingly
 // ---------------------------------------------------------------------------------------------------------
 void VulkanApp::processInput(GLFWwindow *window)
 {
     static bool isFullscreen = false;
     static int windowedWidth, windowedHeight, windowedPosX, windowedPosY;
-    
-    static bool wasGrounded = true;
-    static PlayerAnimation currentAnim = PlayerAnimation::BindPose;
-    static float animStartTime = 0.0f;
-
-    static float lastJumpTime = 0.f;
-
-    PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
-    float currentTime = static_cast<float>(glfwGetTime());
-
-    // Détection dynamique du sol par Raycast vers le bas (ignore le corps du joueur)
-    glm::vec3 downRayOrigin = pose.position + glm::vec3(0.0f, 0.5f, 0.0f);
-    glm::vec3 downRayDir = glm::vec3(0.0f, -1.0f, 0.0f);
-    float hitDist = 0.0f;
-    glm::vec3 hitNormal(0.0f);
-    JPH::BodyID hitBody;
-
-    bool isGrounded = false;
-    if (physicsWorld->raycast(downRayOrigin, downRayDir, 2.0f, hitDist, hitNormal, hitBody, physicsEntities[1].physicsBodyId)) {
-        // Sol praticable si le sol est sous les pieds (dist <= 1.35m) et la normale pointe vers le haut (hitNormal.y >= 0.5f)
-        if (hitDist <= 1.35f && hitNormal.y >= 0.5f) {
-            isGrounded = true;
-        }
-    }
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
-    {
-        pose.orientation = glm::normalize(glm::rotate(pose.orientation, glm::radians(3.0f), glm::vec3(0.f, 1.f, 0.f)));
-        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, pose);
+    if (logicEngine) {
+        logicEngine->updatePlayerMovement(window, physicsWorld.get(), deltaTime);
     }
-    else if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
-    {
-        pose.orientation = glm::normalize(glm::rotate(pose.orientation, glm::radians(-3.0f), glm::vec3(0.f, 1.f, 0.f)));
-        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, pose);
-    }
-
-    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-        if (isGrounded && currentAnim != PlayerAnimation::Jumping && currentAnim != PlayerAnimation::Landing && currentTime - lastJumpTime > .5f) {
-            physicsWorld->add_impulse(physicsEntities[1].physicsBodyId, glm::vec3(0.f, 10000.f, 0.f));
-            isGrounded = false;
-            lastJumpTime = currentTime;
-        }
-        if (currentAnim != PlayerAnimation::Jumping) {
-            currentAnim = PlayerAnimation::Jumping;
-            animStartTime = currentTime;
-        }
-    }
-
-    if (!wasGrounded && isGrounded) {
-        // Atterissage au sol: déclenche l'animation 0 (Landing) une seule fois
-        currentAnim = PlayerAnimation::Landing;
-        animStartTime = currentTime;
-    } else if (!isGrounded && currentAnim != PlayerAnimation::Jumping) {
-        // En l'air: déclenche l'animation 3 (Jumping) une seule fois
-        currentAnim = PlayerAnimation::Jumping;
-        animStartTime = currentTime;
-    }
-
-    bool isMoving = false;
-    bool isSprinting = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-    {   
-        glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
-        float speed = isSprinting ? 12.5f : 10.0f;
-        
-        glm::vec3 rayOrigin = pose.position + dir * 0.5f + glm::vec3(0.0f, 0.5f, 0.0f);
-        glm::vec3 rayDir = glm::vec3(0.0f, -1.0f, 0.0f);
-        
-        float hitDist;
-        glm::vec3 hitNormal;
-        JPH::BodyID hitBody;
-        bool groundAhead = physicsWorld->raycast(rayOrigin, rayDir, 1.5f, hitDist, hitNormal, hitBody, physicsEntities[1].physicsBodyId);
-
-        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
-        if (groundAhead && currentAnim != PlayerAnimation::Landing && currentAnim != PlayerAnimation::Jumping)
-        {
-            physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(dir.x * speed, currentVel.y, dir.z * speed));
-            isMoving = true;
-        }
-        else
-        {
-            physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(currentVel.x, currentVel.y, currentVel.z));
-        }
-    }
-    else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-    {
-        PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
-        glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
-        float speed = isSprinting ? 12.5f : 10.0f;
-        
-        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
-        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(-dir.x * speed, currentVel.y, -dir.z * speed));
-        isMoving = true;
-    }
-    else if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
-    {
-        PhysicsPose initialPose;
-        initialPose.position = glm::vec3(0.0f, 1.0f, 0.0f);
-        initialPose.orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, initialPose);
-        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(0.0f));
-
-        currentAnim = PlayerAnimation::BindPose;
-    }
-    else {
-        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
-        float dampingFactor = 0.8f;
-        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(currentVel.x * dampingFactor, currentVel.y, currentVel.z * dampingFactor));
-    }
-
-    PlayerAnimation targetMoveAnim = isSprinting ? PlayerAnimation::Sprinting : PlayerAnimation::Running;
-
-    if (isGrounded) {
-        if (currentAnim == PlayerAnimation::Landing) {
-            float animDuration = models[1]->getAnimationDuration(static_cast<uint32_t>(PlayerAnimation::Landing));
-            if (currentTime - animStartTime >= animDuration) {
-                if (isMoving) {
-                    currentAnim = targetMoveAnim;
-                    animStartTime = currentTime;
-                } else {
-                    currentAnim = PlayerAnimation::BindPose;
-                }
-            }
-        } else if (isMoving) {
-            if (currentAnim != targetMoveAnim) {
-                currentAnim = targetMoveAnim;
-                animStartTime = currentTime;
-            }
-        } else if (currentAnim != PlayerAnimation::Landing) {
-            currentAnim = PlayerAnimation::BindPose;
-        }
-    }
-
-    float elapsedTime = currentTime - animStartTime;
-    switch (currentAnim) {
-        case PlayerAnimation::Jumping:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Jumping), elapsedTime, false);
-            break;
-        case PlayerAnimation::Landing:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Landing), elapsedTime, false);
-            break;
-        case PlayerAnimation::Running:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Running), elapsedTime, true);
-            break;
-        case PlayerAnimation::Sprinting:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Sprinting), elapsedTime, true);
-            break;
-        case PlayerAnimation::BindPose:
-        default:
-            models[1]->resetToBindPose();
-            break;
-    }
-
-    wasGrounded = isGrounded;
 
     if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS)
     {
@@ -272,7 +119,6 @@ void VulkanApp::processInput(GLFWwindow *window)
         }
     }
     tabPressedLastFrame = tabPressed;
-
 }
 
 // Mouse callback (Logique FPV / First Person View)
@@ -1000,57 +846,81 @@ void VulkanApp::createTlas()
         return;
 
     vk::DeviceSize bufferSize = sizeof(vk::AccelerationStructureInstanceKHR) * maxInstances;
-
-    std::tie(instancesBuffer, instancesBufferMemory) = VulkanUtils::createBuffer(
-        device, physicalDevice, bufferSize,
-        vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-
     vk::DeviceSize instanceDataBufferSize = sizeof(InstanceData) * maxPrimitives;
-    std::tie(instanceDataBuffer, instanceDataBufferMemory) = VulkanUtils::createBuffer(
-        device, physicalDevice, instanceDataBufferSize,
-        vk::BufferUsageFlagBits::eStorageBuffer,
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-    instanceDataBufferMapped = instanceDataBufferMemory.mapMemory(0, instanceDataBufferSize);
 
-    instancesBufferMapped = instancesBufferMemory.mapMemory(0, bufferSize);
-    vk::BufferDeviceAddressInfo instancesAddrInfo{.buffer = *instancesBuffer};
-    vk::DeviceAddress instancesDeviceAddress = device.getBufferAddress(instancesAddrInfo);
-    vk::AccelerationStructureGeometryInstancesDataKHR instancesData{
-        .arrayOfPointers = vk::False,
-        .data = instancesDeviceAddress};
-    vk::AccelerationStructureGeometryKHR geometry{
-        .geometryType = vk::GeometryTypeKHR::eInstances,
-        .geometry = instancesData};
-    vk::AccelerationStructureBuildGeometryInfoKHR buildInfo{
-        .type = vk::AccelerationStructureTypeKHR::eTopLevel,
-        .flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild, // Rapidité de build privilégiée car reconstruite chaque frame
-        .mode = vk::BuildAccelerationStructureModeKHR::eBuild,
-        .geometryCount = 1,
-        .pGeometries = &geometry};
-    vk::AccelerationStructureBuildSizesInfoKHR buildSizes = device.getAccelerationStructureBuildSizesKHR(
-        vk::AccelerationStructureBuildTypeKHR::eDevice,
-        buildInfo,
-        maxInstances);
-    std::tie(tlasBuffer, tlasBufferMemory) = VulkanUtils::createBuffer(
-        device, physicalDevice, buildSizes.accelerationStructureSize,
-        vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-        vk::MemoryPropertyFlagBits::eDeviceLocal);
+    instancesBuffers.clear();
+    instancesBuffersMemory.clear();
+    instancesBuffersMapped.clear();
+    instanceDataBuffers.clear();
+    instanceDataBuffersMemory.clear();
+    instanceDataBuffersMapped.clear();
+    tlasBuffers.clear();
+    tlasBuffersMemory.clear();
+    tlasHandles.clear();
+    tlasScratchBuffers.clear();
+    tlasScratchBuffersMemory.clear();
 
-    vk::AccelerationStructureCreateInfoKHR createInfo{
-        .buffer = *tlasBuffer,
-        .offset = 0,
-        .size = buildSizes.accelerationStructureSize,
-        .type = vk::AccelerationStructureTypeKHR::eTopLevel};
-    tlasHandle = device.createAccelerationStructureKHR(createInfo);
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        auto [instBuf, instMem] = VulkanUtils::createBuffer(
+            device, physicalDevice, bufferSize,
+            vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        instancesBuffers.push_back(std::move(instBuf));
+        instancesBuffersMapped.push_back(instMem.mapMemory(0, bufferSize));
+        instancesBuffersMemory.push_back(std::move(instMem));
 
-    std::tie(tlasScratchBuffer, tlasScratchBufferMemory) = VulkanUtils::createBuffer(
-        device, physicalDevice, buildSizes.buildScratchSize,
-        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-        vk::MemoryPropertyFlagBits::eDeviceLocal);
+        auto [dataBuf, dataMem] = VulkanUtils::createBuffer(
+            device, physicalDevice, instanceDataBufferSize,
+            vk::BufferUsageFlagBits::eStorageBuffer,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        instanceDataBuffers.push_back(std::move(dataBuf));
+        instanceDataBuffersMapped.push_back(dataMem.mapMemory(0, instanceDataBufferSize));
+        instanceDataBuffersMemory.push_back(std::move(dataMem));
+
+        vk::BufferDeviceAddressInfo instancesAddrInfo{.buffer = *instancesBuffers[i]};
+        vk::DeviceAddress instancesDeviceAddress = device.getBufferAddress(instancesAddrInfo);
+        vk::AccelerationStructureGeometryInstancesDataKHR instancesData{
+            .arrayOfPointers = vk::False,
+            .data = instancesDeviceAddress};
+        vk::AccelerationStructureGeometryKHR geometry{
+            .geometryType = vk::GeometryTypeKHR::eInstances,
+            .geometry = instancesData};
+        vk::AccelerationStructureBuildGeometryInfoKHR buildInfo{
+            .type = vk::AccelerationStructureTypeKHR::eTopLevel,
+            .flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild,
+            .mode = vk::BuildAccelerationStructureModeKHR::eBuild,
+            .geometryCount = 1,
+            .pGeometries = &geometry};
+        vk::AccelerationStructureBuildSizesInfoKHR buildSizes = device.getAccelerationStructureBuildSizesKHR(
+            vk::AccelerationStructureBuildTypeKHR::eDevice,
+            buildInfo,
+            maxInstances);
+
+        auto [tlBuf, tlMem] = VulkanUtils::createBuffer(
+            device, physicalDevice, buildSizes.accelerationStructureSize,
+            vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+            vk::MemoryPropertyFlagBits::eDeviceLocal);
+        tlasBuffers.push_back(std::move(tlBuf));
+
+        vk::AccelerationStructureCreateInfoKHR createInfo{
+            .buffer = *tlasBuffers[i],
+            .offset = 0,
+            .size = buildSizes.accelerationStructureSize,
+            .type = vk::AccelerationStructureTypeKHR::eTopLevel};
+        tlasHandles.push_back(device.createAccelerationStructureKHR(createInfo));
+        tlasBuffersMemory.push_back(std::move(tlMem));
+
+        auto [scBuf, scMem] = VulkanUtils::createBuffer(
+            device, physicalDevice, buildSizes.buildScratchSize,
+            vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+            vk::MemoryPropertyFlagBits::eDeviceLocal);
+        tlasScratchBuffers.push_back(std::move(scBuf));
+        tlasScratchBuffersMemory.push_back(std::move(scMem));
+    }
 }
 
-void VulkanApp::updateTlasInstances()
+void VulkanApp::updateTlasInstances(uint32_t currentFrame)
 {
     std::vector<vk::AccelerationStructureInstanceKHR> instances;
     std::vector<InstanceData> instanceData;
@@ -1061,15 +931,15 @@ void VulkanApp::updateTlasInstances()
         model->populateTlasInstances(instances, instanceData, device, customIndexOffset);
     }
 
-    blasInstancesCount = instances.size();
+    blasInstancesCount = static_cast<uint32_t>(instances.size());
 
-    if (instances.empty())
+    if (instances.empty() || currentFrame >= instancesBuffersMapped.size())
         return;
 
-    std::memcpy(instancesBufferMapped, instances.data(), sizeof(vk::AccelerationStructureInstanceKHR) * instances.size());
+    std::memcpy(instancesBuffersMapped[currentFrame], instances.data(), sizeof(vk::AccelerationStructureInstanceKHR) * instances.size());
     if (!instanceData.empty())
     {
-        std::memcpy(instanceDataBufferMapped, instanceData.data(), sizeof(InstanceData) * instanceData.size());
+        std::memcpy(instanceDataBuffersMapped[currentFrame], instanceData.data(), sizeof(InstanceData) * instanceData.size());
     }
 }
 
@@ -1172,9 +1042,16 @@ void VulkanApp::createCompositionResources()
         .pBindings = bindings.data()};
     compositionDescriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
 
+    vk::PushConstantRange pushConstantRange{
+        .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        .offset = 0,
+        .size = sizeof(uint32_t)};
+
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
         .setLayoutCount = 1,
-        .pSetLayouts = &(*compositionDescriptorSetLayout)};
+        .pSetLayouts = &(*compositionDescriptorSetLayout),
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pushConstantRange};
     compositionPipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
     vk::raii::ShaderModule shaderModule = VulkanUtils::createShaderModule(VulkanUtils::readFile("builddir/composition.spv"), device);
@@ -1245,13 +1122,13 @@ void VulkanApp::createDescriptorSets()
             .range = sizeof(CameraUBO)};
 
         // Binding 1 : La TLAS (Acceleration Structure)
-        vk::AccelerationStructureKHR rawTlas = *tlasHandle;
+        vk::AccelerationStructureKHR rawTlas = *tlasHandles[i];
         vk::WriteDescriptorSetAccelerationStructureKHR asInfo{
             .accelerationStructureCount = 1,
             .pAccelerationStructures = &rawTlas};
 
         vk::DescriptorBufferInfo instanceDataInfo{
-            .buffer = *instanceDataBuffer,
+            .buffer = *instanceDataBuffers[i],
             .offset = 0,
             .range = VK_WHOLE_SIZE};
 
@@ -1486,26 +1363,199 @@ void VulkanApp::cleanupImGui()
     imguiDescriptorPool = nullptr;
 }
 
+static void applyCustomTheme(int themeIndex) {
+    if (themeIndex == 0) {
+        ImGui::StyleColorsDark();
+    } else if (themeIndex == 1) {
+        ImGui::StyleColorsLight();
+    } else if (themeIndex == 2) {
+        ImGui::StyleColorsClassic();
+    } else if (themeIndex == 3) {
+        ImGuiStyle& style = ImGui::GetStyle();
+        ImVec4* colors = style.Colors;
+        colors[ImGuiCol_Text]                  = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
+        colors[ImGuiCol_TextDisabled]          = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
+        colors[ImGuiCol_WindowBg]              = ImVec4(0.10f, 0.10f, 0.14f, 0.94f);
+        colors[ImGuiCol_ChildBg]               = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        colors[ImGuiCol_PopupBg]               = ImVec4(0.14f, 0.14f, 0.19f, 0.94f);
+        colors[ImGuiCol_Border]                = ImVec4(0.30f, 0.25f, 0.45f, 0.60f);
+        colors[ImGuiCol_FrameBg]               = ImVec4(0.18f, 0.17f, 0.26f, 0.60f);
+        colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.28f, 0.25f, 0.42f, 0.50f);
+        colors[ImGuiCol_FrameBgActive]         = ImVec4(0.38f, 0.32f, 0.55f, 0.70f);
+        colors[ImGuiCol_TitleBg]               = ImVec4(0.08f, 0.07f, 0.14f, 1.00f);
+        colors[ImGuiCol_TitleBgActive]         = ImVec4(0.22f, 0.18f, 0.40f, 1.00f);
+        colors[ImGuiCol_TitleBgCollapsed]      = ImVec4(0.00f, 0.00f, 0.00f, 0.50f);
+        colors[ImGuiCol_CheckMark]             = ImVec4(0.90f, 0.70f, 0.20f, 1.00f);
+        colors[ImGuiCol_SliderGrab]            = ImVec4(0.90f, 0.70f, 0.20f, 1.00f);
+        colors[ImGuiCol_SliderGrabActive]      = ImVec4(1.00f, 0.80f, 0.30f, 1.00f);
+        colors[ImGuiCol_Button]                = ImVec4(0.24f, 0.20f, 0.40f, 0.85f);
+        colors[ImGuiCol_ButtonHovered]         = ImVec4(0.36f, 0.30f, 0.58f, 1.00f);
+        colors[ImGuiCol_ButtonActive]          = ImVec4(0.48f, 0.40f, 0.72f, 1.00f);
+        colors[ImGuiCol_Header]                = ImVec4(0.24f, 0.20f, 0.40f, 0.75f);
+        colors[ImGuiCol_HeaderHovered]         = ImVec4(0.36f, 0.30f, 0.58f, 0.85f);
+        colors[ImGuiCol_HeaderActive]          = ImVec4(0.48f, 0.40f, 0.72f, 1.00f);
+        colors[ImGuiCol_Tab]                   = ImVec4(0.18f, 0.15f, 0.28f, 0.85f);
+        colors[ImGuiCol_TabHovered]            = ImVec4(0.36f, 0.30f, 0.58f, 0.85f);
+        colors[ImGuiCol_TabActive]             = ImVec4(0.30f, 0.24f, 0.50f, 1.00f);
+    }
+}
+
 void VulkanApp::renderUI()
 {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    // Exemple de fenêtre de contrôle des paramètres
-    ImGui::Begin("Panneau de Contrôle");
-    
-    ImGui::Text("FPS: %.1f (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-    ImGui::Separator();
+    // Historique FPS
+    fpsHistory[fpsHistoryOffset] = ImGui::GetIO().Framerate;
+    fpsHistoryOffset = (fpsHistoryOffset + 1) % 100;
 
-    // Mode de saisie
-    ImGui::Text("Appuie sur TAB pour basculer la souris (%s)", uiMode ? "Mode UI" : "Mode Caméra");
-
-    float h = static_cast<float>(logicEngine->hourUTC);
-    if (ImGui::SliderFloat("Heure (UTC)", &h, 0.0f, 23.99f, "%.2f h")) {
-        logicEngine->hourUTC = static_cast<double>(h);
+    // Masquer le panneau de paramètres lorsque l'on est en jeu (uiMode == false)
+    if (!uiMode) {
+        ImGui::Render();
+        return;
     }
 
+    // Positionnement et dimensionnement à 3/4 de la fenêtre (75% width & height)
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImVec2 workPos = viewport->WorkPos;
+    ImVec2 workSize = viewport->WorkSize;
+
+    float winWidth = workSize.x * 0.75f;
+    float winHeight = workSize.y * 0.75f;
+    float posX = workPos.x + (workSize.x - winWidth) * 0.5f;
+    float posY = workPos.y + (workSize.y - winHeight) * 0.5f;
+
+    ImGui::SetNextWindowPos(ImVec2(posX, posY), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(winWidth, winHeight), ImGuiCond_Always);
+
+    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse;
+
+    if (ImGui::Begin("Paramètres - Moteur Vulkan", nullptr, windowFlags)) {
+        // En-tête : Information et bouton pour fermer le menu
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Panneau de Réglages");
+        ImGui::SameLine(ImGui::GetWindowWidth() - 200);
+        if (ImGui::Button("Fermer les Réglages (TAB)", ImVec2(180, 0))) {
+            uiMode = false;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        }
+        ImGui::Separator();
+
+        if (ImGui::BeginTabBar("ControlTabs", ImGuiTabBarFlags_None)) {
+
+            // TAB 1: GRAPHISMES & SHADERS
+            if (ImGui::BeginTabItem("Graphismes")) {
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "--- Caméra & Vision ---");
+                if (camera) {
+                    ImGui::SliderFloat("Champ de Vision (FOV)", &camera->Zoom, 10.0f, 120.0f, "%.1f°");
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "--- Dénoyeur AMD FidelityFX ---");
+                if (ffxMgr) {
+                    ImGui::SliderInt("Échantillons Max (maxSamples)", &ffxMgr->maxSamples, 1, 64);
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.0f), "--- Ray-Tracing & Effets ---");
+                ImGui::Checkbox("Activer l'Occlusion Ambiante Ray-Tracée (RTAO)", &logicEngine->enableRtao);
+                ImGui::Checkbox("Activer les Réflexions Ray-Tracing", &logicEngine->enableReflections);
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "--- Paramètres de Résolution & Rendu ---");
+                ImGui::Text("Résolution Rendu : %u x %u px", swapChainExtent.width, swapChainExtent.height);
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 2: SOLEIL & CIEL
+            if (ImGui::BeginTabItem("Soleil & Ciel")) {
+                ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.4f, 1.0f), "--- Simulation du Soleil ---");
+
+                float h = static_cast<float>(logicEngine->hourUTC);
+                if (ImGui::SliderFloat("Heure (UTC)", &h, 0.0f, 23.99f, "%.2f h")) {
+                    logicEngine->hourUTC = static_cast<double>(h);
+                }
+
+                ImGui::Checkbox("Cycle Jour / Nuit automatique", &logicEngine->autoTimeCycle);
+                if (logicEngine->autoTimeCycle) {
+                    ImGui::SliderFloat("Vitesse du cycle", &logicEngine->timeCycleSpeed, 0.1f, 10.0f, "x%.1f");
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "--- Date Calendrière ---");
+                ImGui::InputInt("Jour", &logicEngine->day);
+                logicEngine->day = std::clamp(logicEngine->day, 1, 31);
+
+                ImGui::InputInt("Mois", &logicEngine->month);
+                logicEngine->month = std::clamp(logicEngine->month, 1, 12);
+
+                ImGui::InputInt("Année", &logicEngine->year);
+                logicEngine->year = std::clamp(logicEngine->year, 1900, 2100);
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "--- Position Géographique ---");
+                float lat = static_cast<float>(logicEngine->latitude);
+                if (ImGui::SliderFloat("Latitude (°)", &lat, -90.0f, 90.0f, "%.2f°")) {
+                    logicEngine->latitude = static_cast<double>(lat);
+                }
+                float lon = static_cast<float>(logicEngine->longitude);
+                if (ImGui::SliderFloat("Longitude (°)", &lon, -180.0f, 180.0f, "%.2f°")) {
+                    logicEngine->longitude = static_cast<double>(lon);
+                }
+
+                ImGui::Text("Villes prédéfinies :");
+                if (ImGui::Button("Paris")) { logicEngine->latitude = 48.8566; logicEngine->longitude = 2.3522; }
+                ImGui::SameLine();
+                if (ImGui::Button("Tokyo")) { logicEngine->latitude = 35.6762; logicEngine->longitude = 139.6503; }
+                ImGui::SameLine();
+                if (ImGui::Button("New York")) { logicEngine->latitude = 40.7128; logicEngine->longitude = -74.0060; }
+                ImGui::SameLine();
+                if (ImGui::Button("Équateur")) { logicEngine->latitude = 0.0; logicEngine->longitude = 0.0; }
+
+                ImGui::Separator();
+                glm::vec3 sunDir = SunCalc::calculateSunDirection(
+                    logicEngine->year, logicEngine->month, logicEngine->day,
+                    logicEngine->hourUTC, logicEngine->latitude, logicEngine->longitude);
+                ImGui::Text("Direction du Soleil : (%.2f, %.2f, %.2f)", sunDir.x, sunDir.y, sunDir.z);
+                float elevationDeg = std::asin(std::clamp(sunDir.y, -1.0f, 1.0f)) * (180.0f / 3.14159265f);
+                ImGui::Text("Élévation du Soleil : %.1f° (%s)", elevationDeg, elevationDeg > 0.0f ? "Jour" : "Nuit");
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 3: PERFORMANCES
+            if (ImGui::BeginTabItem("Performances")) {
+                ImGui::Text("Taux de rafraîchissement (FPS) : %.1f", ImGui::GetIO().Framerate);
+                ImGui::Text("Temps d'affichage (Frametime) : %.3f ms", 1000.0f / ImGui::GetIO().Framerate);
+                ImGui::PlotLines("Historique FPS", fpsHistory, 100, fpsHistoryOffset, nullptr, 0.0f, 160.0f, ImVec2(0, 70));
+                
+                ImGui::Separator();
+                ImGui::Text("Résolution Swapchain : %u x %u px", swapChainExtent.width, swapChainExtent.height);
+                ImGui::Text("Modèles 3D chargés : %zu", models.size());
+                
+                ImGui::EndTabItem();
+            }
+
+            // TAB 4: THÈME & INTERFACE
+            if (ImGui::BeginTabItem("Interface UI")) {
+                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "--- Style Visuel Dear ImGui ---");
+                
+                const char* themes[] = { "Sombre (Dark)", "Clair (Light)", "Classique (Classic)", "Moderne Violet/Or" };
+                if (ImGui::Combo("Thème de l'UI", &currentThemeIndex, themes, IM_ARRAYSIZE(themes))) {
+                    applyCustomTheme(currentThemeIndex);
+                }
+
+                ImGui::Separator();
+                ImGui::SliderFloat("Opacité de la Fenêtre (Alpha)", &ImGui::GetStyle().Alpha, 0.2f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Arrondi des Coins (Rounding)", &ImGui::GetStyle().WindowRounding, 0.0f, 12.0f, "%.1f px");
+
+                ImGui::EndTabItem();
+            }
+
+            ImGui::EndTabBar();
+        }
+    }
     ImGui::End();
 
     ImGui::Render();

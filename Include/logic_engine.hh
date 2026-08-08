@@ -1,5 +1,6 @@
 #pragma once
 
+#include "level_loader.hh"
 #include "vulkan_app.hpp"
 
 #include <glm/glm.hpp>
@@ -8,6 +9,14 @@
 #include <glm/gtx/hash.hpp>
 
 #include "model.hpp"
+
+enum class PlayerAnimation : int {
+    BindPose  = -1,
+    Landing   = 0,
+    Running   = 1,
+    Sprinting = 2,
+    Jumping   = 3
+};
 
 enum GameMovment {
     M_FORWARD,
@@ -25,6 +34,7 @@ public:
     LogicEngine();
 
     void movment(GameMovment, float deltaTime);
+    void updatePlayerMovement(GLFWwindow* window, PhysicsWorld* physicsWorld, float deltaTime);
 
     void loadModels(VulkanApp* app);
 
@@ -32,16 +42,27 @@ public:
 
     Camera* getCamPtr() { return &camera; }
 
-    // Skybox parameters : defaulted to equinoxe
+    // Skybox & Sun parameters : defaulted to equinoxe / Paris
     int year = 2026;
     int month = 9;
     int day = 23;
-    double hourUTC = 08.0;
+    double hourUTC = 8.0;
+    double latitude = 48.8566;
+    double longitude = 2.3522;
+    bool autoTimeCycle = false;
+    float timeCycleSpeed = 1.0f;
+
+    LevelData levelData;
+
+    bool enableRtao;
+    bool enableReflections;
+
+    int playerIndex = ~0;
 private:
     Camera camera;
 
     bool wasGrounded = true;
-    int currentAnimIndex = -1; // -1: bind pose / idle, 0: landing, 1: running, 2: jumping/air
+    PlayerAnimation currentAnim = PlayerAnimation::BindPose;
     float animStartTime = 0.0f;
 
     float lastJumpTime = 0.f;

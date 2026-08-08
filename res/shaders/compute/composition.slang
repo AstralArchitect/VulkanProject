@@ -6,6 +6,11 @@
 [[vk::binding(4, 0)]] RWTexture2D<float4> outFinalImage;
 [vk::binding(5, 0)] Texture2D<float4> inRoughness;
 
+struct PushConstants {
+    uint isMenuOpen;
+};
+[vk::push_constant] PushConstants push;
+
 float luminance(float3 color)
 {
     return dot(color, float3(0.2126, 0.7152, 0.0722));
@@ -91,6 +96,33 @@ void main(uint3 threadId : SV_DispatchThreadID)
 
     // Composition finale
     float3 color = directColor.rgb + finalReflection;
+
+    // Si le menu ImGui est ouvert (TAB), appliquer un effet de flou cinématographique + assombrissement de l'arrière-plan
+    if (push.isMenuOpen != 0)
+    {
+        float3 blurredBg = float3(0.0);
+        float totalBlurWeight = 0.0;
+        int blurRadius = 8;
+        for (int dy = -blurRadius; dy <= blurRadius; dy += 2)
+        {
+            int y = clamp(texCoords.y + dy, 0, int(height) - 1);
+            for (int dx = -blurRadius; dx <= blurRadius; dx += 2)
+            {
+                int x = clamp(texCoords.x + dx, 0, int(width) - 1);
+                float distSq = float(dx * dx + dy * dy);
+                float w = exp(-distSq / 32.0);
+
+                float3 dCol = inDirectColor.Load(int3(x, y, 0)).rgb;
+                float3 rCol = inReflection.Load(int3(x, y, 0)).rgb;
+                blurredBg += (dCol + rCol) * w;
+                totalBlurWeight += w;
+            }
+        }
+        if (totalBlurWeight > 0.0)
+        {
+            color = (blurredBg / totalBlurWeight) * 0.45;
+        }
+    }
 
     // Tonemapping de base (Reinhard) + Gamma correction
     color = color / (color + float3(1.0));
