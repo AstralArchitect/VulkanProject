@@ -144,6 +144,9 @@ void VulkanApp::mouse(double xposIn, double yposIn) {
     camera->ProcessMouseMovement(xoffset, yoffset);
 }
 
+void VulkanApp::scroll(double yoffset) {
+    camera->ProcessMouseScroll(static_cast<float>(yoffset));
+}
 
 void VulkanApp::initWindow()
 {
@@ -158,6 +161,7 @@ void VulkanApp::initWindow()
     window = glfwCreateWindow(WIDTH, HEIGHT, "RT App", nullptr, nullptr);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    glfwSetScrollCallback(window, scrollCallback);
     glfwSetCursorPosCallback(window, mouseCallback);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 

@@ -6,9 +6,7 @@ glfw-*/
 glm-*/
 subprojects/tinyobjloader/
 .wraplock
-res/blender_models/*.blend1
 .vscode/
 .cache/
-*.blend
 *.blend1
 jolt

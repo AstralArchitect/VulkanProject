@@ -33,7 +33,6 @@ class LogicEngine {
 public:
     LogicEngine();
 
-    void movment(GameMovment, float deltaTime);
     void updatePlayerMovement(GLFWwindow* window, PhysicsWorld* physicsWorld, float deltaTime);
 
     void loadModels(VulkanApp* app);

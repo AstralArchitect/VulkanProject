@@ -201,11 +201,19 @@ private:
 
     void processInput(GLFWwindow *window);
     void mouse(double xposIn, double yposIn);
+    void scroll(double yoffset);
 
     static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
         auto app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
         if (app) {
             app->mouse(xpos, ypos);
+        }
+    }
+
+    static void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
+        auto app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+        if (app) {
+            app->scroll(yoffset);
         }
     }
 

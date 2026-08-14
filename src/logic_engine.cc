@@ -23,14 +23,10 @@ LogicEngine::LogicEngine() {
     camera.lookAt(glm::vec3(0.f, 1.f, 0.f));
 }
 
-void LogicEngine::movment(GameMovment movement, float deltaTime) {
-
-}
-
 void LogicEngine::updatePlayerMovement(GLFWwindow* window, PhysicsWorld* physicsWorld, float deltaTime) {
     if (physicsEntities.size() <= 1 || !physicsWorld) return;
 
-    PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
+    PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[playerIndex].physicsBodyId);
     float currentTime = static_cast<float>(glfwGetTime());
 
     // Détection dynamique du sol par Raycast vers le bas (ignore le corps du joueur)
@@ -41,26 +37,74 @@ void LogicEngine::updatePlayerMovement(GLFWwindow* window, PhysicsWorld* physics
     JPH::BodyID hitBody;
 
     bool isGrounded = false;
-    if (physicsWorld->raycast(downRayOrigin, downRayDir, 2.0f, hitDist, hitNormal, hitBody, physicsEntities[1].physicsBodyId)) {
+    if (physicsWorld->raycast(downRayOrigin, downRayDir, 2.0f, hitDist, hitNormal, hitBody, physicsEntities[playerIndex].physicsBodyId)) {
         if (hitDist <= 1.35f && hitNormal.y >= 0.5f) {
             isGrounded = true;
         }
     }
 
-    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
-    {
-        pose.orientation = glm::normalize(glm::rotate(pose.orientation, glm::radians(3.0f), glm::vec3(0.f, 1.f, 0.f)));
-        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, pose);
+    // Direction de la caméra projetée sur le plan horizontal XZ
+    glm::vec3 camFront = camera.Front;
+    glm::vec3 moveForward = glm::vec3(camFront.x, 0.0f, camFront.z);
+    if (glm::length(moveForward) > 0.001f) {
+        moveForward = glm::normalize(moveForward);
+    } else {
+        moveForward = glm::vec3(0.0f, 0.0f, 1.0f);
     }
-    else if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
-    {
-        pose.orientation = glm::normalize(glm::rotate(pose.orientation, glm::radians(-3.0f), glm::vec3(0.f, 1.f, 0.f)));
-        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, pose);
+    glm::vec3 moveRight = glm::normalize(glm::cross(moveForward, glm::vec3(0.0f, 1.0f, 0.0f)));
+
+    glm::vec3 moveInput(0.0f);
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        moveInput += moveForward;
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        moveInput -= moveForward;
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        moveInput -= moveRight;
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        moveInput += moveRight;
+
+    bool isMoving = false;
+    bool isSprinting = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+
+    if (glm::length(moveInput) > 0.001f) {
+        glm::vec3 dir = glm::normalize(moveInput);
+        float speed = isSprinting ? 12.5f : 10.0f;
+
+        // Orienter le personnage vers la direction du déplacement
+        glm::quat targetRot = glm::angleAxis(std::atan2(dir.x, dir.z), glm::vec3(0.0f, 1.0f, 0.0f));
+        pose.orientation = glm::slerp(pose.orientation, targetRot, std::min(1.0f, 15.0f * deltaTime));
+        physicsWorld->move_kinematic(physicsEntities[playerIndex].physicsBodyId, pose);
+
+        // Raycast pour vérifier le sol devant
+        glm::vec3 rayOrigin = pose.position + dir * 0.5f + glm::vec3(0.0f, 0.5f, 0.0f);
+        glm::vec3 rayDir = glm::vec3(0.0f, -1.0f, 0.0f);
+        bool groundAhead = physicsWorld->raycast(rayOrigin, rayDir, 1.5f, hitDist, hitNormal, hitBody, physicsEntities[playerIndex].physicsBodyId);
+
+        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[playerIndex].physicsBodyId);
+        if (groundAhead && currentAnim != PlayerAnimation::Landing && currentAnim != PlayerAnimation::Jumping) {
+            physicsWorld->set_linear_velocity(physicsEntities[playerIndex].physicsBodyId, glm::vec3(dir.x * speed, currentVel.y, dir.z * speed));
+            isMoving = true;
+        } else {
+            physicsWorld->set_linear_velocity(physicsEntities[playerIndex].physicsBodyId, glm::vec3(currentVel.x, currentVel.y, currentVel.z));
+        }
+    } else if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
+        PhysicsPose initialPose;
+        initialPose.position = glm::vec3(0.0f, 1.0f, 0.0f);
+        initialPose.orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        physicsWorld->move_kinematic(physicsEntities[playerIndex].physicsBodyId, initialPose);
+        physicsWorld->set_linear_velocity(physicsEntities[playerIndex].physicsBodyId, glm::vec3(0.0f));
+
+        currentAnim = PlayerAnimation::BindPose;
+    } else {
+        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[playerIndex].physicsBodyId);
+        float dampingFactor = 0.8f;
+        physicsWorld->set_linear_velocity(physicsEntities[playerIndex].physicsBodyId, glm::vec3(currentVel.x * dampingFactor, currentVel.y, currentVel.z * dampingFactor));
     }
 
+    // Saut
     if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
         if (isGrounded && currentAnim != PlayerAnimation::Jumping && currentAnim != PlayerAnimation::Landing && currentTime - lastJumpTime > .5f) {
-            physicsWorld->add_impulse(physicsEntities[1].physicsBodyId, glm::vec3(0.f, 10000.f, 0.f));
+            physicsWorld->add_impulse(physicsEntities[playerIndex].physicsBodyId, glm::vec3(0.f, 15000.f, 0.f));
             isGrounded = false;
             lastJumpTime = currentTime;
         }
@@ -78,64 +122,11 @@ void LogicEngine::updatePlayerMovement(GLFWwindow* window, PhysicsWorld* physics
         animStartTime = currentTime;
     }
 
-    bool isMoving = false;
-    bool isSprinting = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-    {   
-        glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
-        float speed = isSprinting ? 12.5f : 10.0f;
-        
-        glm::vec3 rayOrigin = pose.position + dir * 0.5f + glm::vec3(0.0f, 0.5f, 0.0f);
-        glm::vec3 rayDir = glm::vec3(0.0f, -1.0f, 0.0f);
-        
-        float hitDist;
-        glm::vec3 hitNormal;
-        JPH::BodyID hitBody;
-        bool groundAhead = physicsWorld->raycast(rayOrigin, rayDir, 1.5f, hitDist, hitNormal, hitBody, physicsEntities[1].physicsBodyId);
-
-        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
-        if (groundAhead && currentAnim != PlayerAnimation::Landing && currentAnim != PlayerAnimation::Jumping)
-        {
-            physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(dir.x * speed, currentVel.y, dir.z * speed));
-            isMoving = true;
-        }
-        else
-        {
-            physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(currentVel.x, currentVel.y, currentVel.z));
-        }
-    }
-    else if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-    {
-        PhysicsPose pose = physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
-        glm::vec3 dir = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
-        float speed = isSprinting ? 12.5f : 10.0f;
-        
-        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
-        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(-dir.x * speed, currentVel.y, -dir.z * speed));
-        isMoving = true;
-    }
-    else if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
-    {
-        PhysicsPose initialPose;
-        initialPose.position = glm::vec3(0.0f, 1.0f, 0.0f);
-        initialPose.orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-        physicsWorld->move_kinematic(physicsEntities[1].physicsBodyId, initialPose);
-        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(0.0f));
-
-        currentAnim = PlayerAnimation::BindPose;
-    }
-    else {
-        glm::vec3 currentVel = physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
-        float dampingFactor = 0.8f;
-        physicsWorld->set_linear_velocity(physicsEntities[1].physicsBodyId, glm::vec3(currentVel.x * dampingFactor, currentVel.y, currentVel.z * dampingFactor));
-    }
-
     PlayerAnimation targetMoveAnim = isSprinting ? PlayerAnimation::Sprinting : PlayerAnimation::Running;
 
     if (isGrounded) {
         if (currentAnim == PlayerAnimation::Landing) {
-            float animDuration = models[1]->getAnimationDuration(static_cast<uint32_t>(PlayerAnimation::Landing));
+            float animDuration = models[playerIndex]->getAnimationDuration(static_cast<uint32_t>(PlayerAnimation::Landing));
             if (currentTime - animStartTime >= animDuration) {
                 if (isMoving) {
                     currentAnim = targetMoveAnim;
@@ -157,20 +148,20 @@ void LogicEngine::updatePlayerMovement(GLFWwindow* window, PhysicsWorld* physics
     float elapsedTime = currentTime - animStartTime;
     switch (currentAnim) {
         case PlayerAnimation::Jumping:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Jumping), elapsedTime, false);
+            models[playerIndex]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Jumping), elapsedTime, false);
             break;
         case PlayerAnimation::Landing:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Landing), elapsedTime, false);
+            models[playerIndex]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Landing), elapsedTime, false);
             break;
         case PlayerAnimation::Running:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Running), elapsedTime, true);
+            models[playerIndex]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Running), elapsedTime, true);
             break;
         case PlayerAnimation::Sprinting:
-            models[1]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Sprinting), elapsedTime, true);
+            models[playerIndex]->updateAnimation(static_cast<uint32_t>(PlayerAnimation::Sprinting), elapsedTime, true);
             break;
         case PlayerAnimation::BindPose:
         default:
-            models[1]->resetToBindPose();
+            models[playerIndex]->resetToBindPose();
             break;
     }
 
@@ -192,7 +183,7 @@ void loadEntityFromLevel(EntityConfig conf, PhysicsWorld& world, int& playerInde
     if (conf.isPlayer) {
         if (playerIndex != ~0) throw std::runtime_error("Cannot accept more than 2 players");
 
-        playerIndex = models.size();
+        playerIndex = models.size() - 1;
     }
 
     models.back()->setStaticTransform(glm::scale_slow(glm::mat4(1.f), glm::vec3(conf.transform.scale)) * glm::mat4_cast(conf.transform.rotation));
@@ -365,33 +356,37 @@ void LogicEngine::nextFrame(const VulkanApp* app) {
     static bool isFirstFrame = true;
 
     // Récupération de la pose et de la vitesse du joueur depuis la physique
-    PhysicsPose pose = app->physicsWorld->get_body_pose(physicsEntities[1].physicsBodyId);
+    PhysicsPose pose = app->physicsWorld->get_body_pose(physicsEntities[playerIndex].physicsBodyId);
     glm::vec3 playerPos = pose.position;
     glm::vec3 playerForward = pose.orientation * glm::vec3(0.f, 0.f, 1.f);
 
-    glm::vec3 vel = app->physicsWorld->get_linear_velocity(physicsEntities[1].physicsBodyId);
+    glm::vec3 vel = app->physicsWorld->get_linear_velocity(physicsEntities[playerIndex].physicsBodyId);
     float playerSpeed = glm::length(glm::vec2(vel.x, vel.z));
 
     // La direction de la caméra est pilotée par la souris via camera.Front
     glm::vec3 camFront = camera.Front;
 
-    // Recentrage automatique de la caméra derrière le personnage lorsqu'il se déplace
-    if (playerSpeed > 0.5f)
-    {
-        constexpr float autoAlignSpeed = 4.0f; // Vitesse de recentrage de la caméra derrière le joueur
-        camFront = glm::normalize(glm::mix(camFront, playerForward, std::min(1.0f, autoAlignSpeed * app->deltaTime)));
-        camera.lookAt(playerPos + camFront * 10.0f + glm::vec3(0.f, cameraHeight, 0.f));
-    }
-
     // Positions idéales (sans lissage)
     glm::vec3 idealTargetPos = playerPos + glm::vec3(0.0f, targetHeightOffset, 0.0f);
-    // La caméra se place derrière le point visé sur la sphère d'orbite (-camFront * distance)
-    glm::vec3 idealCamPos = idealTargetPos - camFront * cameraDistance;
+
+    // Détection de collision (Raycast de la cible vers la position idéale de la caméra)
+    float actualDistance = cameraDistance;
+    glm::vec3 rayDir = -camFront;
+    float hitDist = 0.0f;
+    glm::vec3 hitNormal(0.0f);
+    JPH::BodyID hitBody;
+
+    if (app->physicsWorld->raycast(idealTargetPos, rayDir, cameraDistance, hitDist, hitNormal, hitBody, physicsEntities[playerIndex].physicsBodyId)) {
+        constexpr float margin = 0.25f; // Marge de sécurité pour ne pas que le Near Plane de la caméra traverse le mur
+        actualDistance = std::max(0.3f, hitDist - margin);
+    }
+
+    glm::vec3 targetCamPos = idealTargetPos - camFront * actualDistance;
 
     // Initialisation à la première frame (évite les téléportations)
     if (isFirstFrame)
     {
-        currentCamPos = idealCamPos;
+        currentCamPos = targetCamPos;
         currentTargetPos = idealTargetPos;
         isFirstFrame = false;
     }
@@ -401,7 +396,7 @@ void LogicEngine::nextFrame(const VulkanApp* app) {
         float posAlpha = 1.0f - std::exp(-posSmoothSpeed * app->deltaTime);
         float targetAlpha = 1.0f - std::exp(-targetSmoothSpeed * app->deltaTime);
 
-        currentCamPos = glm::mix(currentCamPos, idealCamPos, posAlpha);
+        currentCamPos = glm::mix(currentCamPos, targetCamPos, posAlpha);
         currentTargetPos = glm::mix(currentTargetPos, idealTargetPos, targetAlpha);
     }
 
