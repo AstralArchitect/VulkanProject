@@ -2,7 +2,7 @@
 directory = tinygltf-2.9.6
 source_url = https://github.com/syoyo/tinygltf/archive/refs/tags/v2.9.6.tar.gz
 source_filename = tinygltf-2.9.6.tar.gz
-source_hash = ba2c47a095136bfc8a5d085421e60eb8e8df3bca4ae36eb395084c1b264c6927
+source_hash = 93e4dc0d2db81dcb8624379796244088e77c26252c73f2e50e4ff6e665af2f11
 patch_directory = tinygltf_patch
 
 [provide]

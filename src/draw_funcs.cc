@@ -424,21 +424,29 @@ void VulkanApp::drawFrame()
     {
         throw std::runtime_error("failed to wait for fence!");
     }
-    device.resetFences(*inFlightFences[frameIndex]);
 
-    auto [result, imageIndex] = swapChain.acquireNextImage(
-        UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
+    uint32_t imageIndex = 0;
+    try {
+        auto [result, index] = swapChain.acquireNextImage(
+            UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
 
-    if (result == vk::Result::eErrorOutOfDateKHR)
-    {
+        if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
+            recreateSwapChain();
+            return;
+        }
+        imageIndex = index;
+    } catch (const vk::OutOfDateKHRError&) {
         recreateSwapChain();
         return;
+    } catch (const vk::SystemError& e) {
+        if (e.code() == vk::Result::eErrorOutOfDateKHR) {
+            recreateSwapChain();
+            return;
+        }
+        throw;
     }
-    if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR)
-    {
-        assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
-        throw std::runtime_error("failed to acquire swap chain image!");
-    }
+    
+    device.resetFences(*inFlightFences[frameIndex]);
 
     renderUI();
 
@@ -474,18 +482,22 @@ void VulkanApp::drawFrame()
         .swapchainCount = 1,
         .pSwapchains = &*swapChain,
         .pImageIndices = &imageIndex};
-    result = graphicsQueue.presentKHR(presentInfoKHR);
-    if ((result == vk::Result::eSuboptimalKHR) ||
-        (result == vk::Result::eErrorOutOfDateKHR))
-    {
+    try {
+        auto result = graphicsQueue.presentKHR(presentInfoKHR);
+        if (result == vk::Result::eSuboptimalKHR || result == vk::Result::eErrorOutOfDateKHR || framebufferResized) {
+            framebufferResized = false;
+            recreateSwapChain();
+        }
+    } catch (const vk::OutOfDateKHRError&) {
         framebufferResized = false;
         recreateSwapChain();
-    }
-    else
-    {
-        // There are no other success codes than eSuccess; on any error code,
-        // presentKHR already threw an exception.
-        assert(result == vk::Result::eSuccess);
+    } catch (const vk::SystemError& e) {
+        if (e.code() == vk::Result::eErrorOutOfDateKHR || e.code() == vk::Result::eSuboptimalKHR) {
+            framebufferResized = false;
+            recreateSwapChain();
+        } else {
+            throw;
+        }
     }
     frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 }

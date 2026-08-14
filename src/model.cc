@@ -88,7 +88,7 @@ void GltfMaterial::bind(vk::raii::CommandBuffer &commandBuffer, vk::raii::Pipeli
 
     pushConstants.activeAttributes = features;
 
-    commandBuffer.pushConstants(pipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MeshPushConstants), &pushConstants);
+    commandBuffer.pushConstants<MeshPushConstants>(*pipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
 }
 
 void GltfPrimitive::draw(vk::raii::CommandBuffer &commandBuffer, vk::raii::PipelineLayout &pipelineLayout, vk::raii::Buffer &globalVertexBuffer, glm::mat4 modelMatrix, glm::mat4 prevModelMatrix) const
