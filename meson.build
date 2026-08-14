@@ -8,7 +8,7 @@ project(
 
 cpp_compiler = meson.get_compiler('cpp')
 
-add_project_arguments('-DGLM_FORCE_DEFAULT_ALIGNED_GENTYPES', '-DGLM_FORCE_DEPTH_ZERO_TO_ONE', '-DJPH_PROFILE_ENABLED=0', '-DJPH_DEBUG_RENDERER=0', '-DJPH_FLOATING_POINT_EXCEPTIONS_ENABLED=0', language: 'cpp')
+add_project_arguments('-DGLM_FORCE_DEFAULT_ALIGNED_GENTYPES', '-DGLM_FORCE_DEPTH_ZERO_TO_ONE', '-DJPH_PROFILE_ENABLED=0', '-DJPH_DEBUG_RENDERER=0', '-DJPH_FLOATING_POINT_EXCEPTIONS_ENABLED=0', '-DGLFW_INCLUDE_VULKAN', language: 'cpp')
 
 if cpp_compiler.get_id() == 'gcc'
     add_global_arguments('-std=gnu++20', language: 'cpp')

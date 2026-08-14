@@ -19,9 +19,6 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif
 
-#ifdef _WIN32
-#include <windows.h>
-
 #include "logic_engine.hh"
 
 #include "sun_calc.hh"
@@ -29,6 +26,9 @@ constexpr bool enableValidationLayers = true;
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
+
+#ifdef _WIN32
+#include <windows.h>
 
 void sleep_ms(DWORD milliseconds)
 {
@@ -1185,6 +1185,8 @@ void VulkanApp::cleanupSwapChain()
 void VulkanApp::recreateSwapChain()
 {
     int width = 0, height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    
     while (width == 0 || height == 0)
     {
         glfwGetFramebufferSize(window, &width, &height);
