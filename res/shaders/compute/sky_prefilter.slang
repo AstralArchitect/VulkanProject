@@ -13,6 +13,7 @@ struct CameraUBO {
 
 [vk::binding(0, 0)] ConstantBuffer<CameraUBO> camera;
 [vk::binding(0, 1)] RWTexture2DArray<float4> outputCubemap;
+[vk::binding(1, 1)] SamplerCube inputSkyCubemapMip0;
 
 struct PushConstants {
     uint faceSize;
@@ -197,7 +198,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
         float NdotL = max(dot(N, L), 0.0);
         if (NdotL > 0.0) {
-            prefilteredColor += calculateProceduralSky(L, camera.sunDir.xyz, camera.sunColor.rgb, push.mipLevel) * NdotL;
+            float3 skySample = inputSkyCubemapMip0.SampleLevel(L, 0.0).rgb;
+            
+            prefilteredColor += skySample * NdotL;
             totalWeight += NdotL;
         }
     }

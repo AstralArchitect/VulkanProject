@@ -193,6 +193,21 @@ void VulkanUtils::BackgroundTexture::create(
     };
     imageView = device.createImageView(viewInfo);
 
+    // 3b. Creation de l'ImageView pour le Mip 0 seul (type eCube) pour le sampling dans la convolution des Mips 1..N
+    vk::ImageViewCreateInfo mip0ViewInfo{
+        .image = *image,
+        .viewType = vk::ImageViewType::eCube,
+        .format = format,
+        .subresourceRange = vk::ImageSubresourceRange{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 6
+        }
+    };
+    mip0CubeView = device.createImageView(mip0ViewInfo);
+
     // 4. Creation du Sampler adapte aux Cubemaps
     vk::PhysicalDeviceProperties properties = physicalDevice.getProperties();
     vk::SamplerCreateInfo samplerInfo{
@@ -230,16 +245,26 @@ void VulkanUtils::BackgroundTexture::create(
         mipViews.push_back(device.createImageView(mipViewInfo));
     }
 
-    // 6. Descriptor Set Layout pour le Compute (Set 1, Binding 0: Storage Image)
-    vk::DescriptorSetLayoutBinding storageBinding{
-        .binding = 0,
-        .descriptorType = vk::DescriptorType::eStorageImage,
-        .descriptorCount = 1,
-        .stageFlags = vk::ShaderStageFlagBits::eCompute
+    // 6. Descriptor Set Layout pour le Compute (Set 1)
+    // Binding 0: RWTexture2DArray (Storage Image pour écrire le mip courant)
+    // Binding 1: SamplerCube (Combined Image Sampler pour lire le Mip 0)
+    std::array<vk::DescriptorSetLayoutBinding, 2> computeBindings = {
+        vk::DescriptorSetLayoutBinding{
+            .binding = 0,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute
+        },
+        vk::DescriptorSetLayoutBinding{
+            .binding = 1,
+            .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute
+        }
     };
     vk::DescriptorSetLayoutCreateInfo computeLayoutInfo{
-        .bindingCount = 1,
-        .pBindings = &storageBinding
+        .bindingCount = static_cast<uint32_t>(computeBindings.size()),
+        .pBindings = computeBindings.data()
     };
     computeDescriptorSetLayout = device.createDescriptorSetLayout(computeLayoutInfo);
 
@@ -273,15 +298,21 @@ void VulkanUtils::BackgroundTexture::create(
     computePipeline = device.createComputePipeline(nullptr, computePipelineInfo);
 
     // 8. Descriptor Pool & Sets pour chaque Mip Level
-    vk::DescriptorPoolSize poolSize{
-        .type = vk::DescriptorType::eStorageImage,
-        .descriptorCount = mipLevels
+    std::array<vk::DescriptorPoolSize, 2> poolSizes = {
+        vk::DescriptorPoolSize{
+            .type = vk::DescriptorType::eStorageImage,
+            .descriptorCount = mipLevels
+        },
+        vk::DescriptorPoolSize{
+            .type = vk::DescriptorType::eCombinedImageSampler,
+            .descriptorCount = mipLevels
+        }
     };
     vk::DescriptorPoolCreateInfo poolInfo{
         .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
         .maxSets = mipLevels,
-        .poolSizeCount = 1,
-        .pPoolSizes = &poolSize
+        .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
+        .pPoolSizes = poolSizes.data()
     };
     computeDescriptorPool = device.createDescriptorPool(poolInfo);
 
@@ -293,21 +324,36 @@ void VulkanUtils::BackgroundTexture::create(
     };
     computeDescriptorSets = device.allocateDescriptorSets(allocSetInfo);
 
-    // Mise a jour des Descriptor Sets avec les ImageViews par mip level
+    // Mise a jour des Descriptor Sets avec les ImageViews par mip level et la vue Mip0
     for (uint32_t level = 0; level < mipLevels; ++level) {
         vk::DescriptorImageInfo storageImageInfo{
             .imageView = *mipViews[level],
             .imageLayout = vk::ImageLayout::eGeneral
         };
-        vk::WriteDescriptorSet writeSet{
-            .dstSet = *computeDescriptorSets[level],
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = vk::DescriptorType::eStorageImage,
-            .pImageInfo = &storageImageInfo
+        vk::DescriptorImageInfo sampledMip0Info{
+            .sampler = *sampler,
+            .imageView = *mip0CubeView,
+            .imageLayout = vk::ImageLayout::eGeneral
         };
-        device.updateDescriptorSets({ writeSet }, nullptr);
+        std::array<vk::WriteDescriptorSet, 2> writeSets = {
+            vk::WriteDescriptorSet{
+                .dstSet = *computeDescriptorSets[level],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eStorageImage,
+                .pImageInfo = &storageImageInfo
+            },
+            vk::WriteDescriptorSet{
+                .dstSet = *computeDescriptorSets[level],
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                .pImageInfo = &sampledMip0Info
+            }
+        };
+        device.updateDescriptorSets(writeSets, nullptr);
     }
 }
 
@@ -343,16 +389,57 @@ void VulkanUtils::BackgroundTexture::update(
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *computePipeline);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *computePipelineLayout, 0, *cameraDescriptorSet, nullptr);
 
-    for (uint32_t level = 0; level < mipLevels; ++level) {
+    // --- PASSE 1 : Calcul procédural du ciel dans le Mip 0 ---
+    struct PushConstants {
+        uint32_t faceSize;
+        uint32_t mipLevel;
+        uint32_t maxMipLevel;
+        float roughness;
+    } push0{
+        .faceSize = width,
+        .mipLevel = 0,
+        .maxMipLevel = mipLevels,
+        .roughness = 0.0f
+    };
+
+    cmd.pushConstants<PushConstants>(*computePipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, push0);
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *computePipelineLayout, 1, *computeDescriptorSets[0], nullptr);
+
+    uint32_t groupCountX0 = (width + 15) / 16;
+    uint32_t groupCountY0 = (width + 15) / 16;
+    cmd.dispatch(groupCountX0, groupCountY0, 6);
+
+    // --- Barrière mémoire : Attendre la fin de l'écriture du Mip 0 avant de le lire dans les Mips 1..N ---
+    vk::ImageMemoryBarrier mip0ReadBarrier{
+        .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
+        .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = *image,
+        .subresourceRange = vk::ImageSubresourceRange{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 6
+        }
+    };
+
+    cmd.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::DependencyFlags{},
+        nullptr, nullptr, mip0ReadBarrier
+    );
+
+    // --- PASSE 2 : Convolution GGX pour les Mips 1 à N (échantillonnant le Mip 0) ---
+    for (uint32_t level = 1; level < mipLevels; ++level) {
         uint32_t currentMipSize = std::max(1u, width >> level);
         float roughness = (mipLevels > 1) ? (static_cast<float>(level) / static_cast<float>(mipLevels - 1)) : 0.0f;
 
-        struct PushConstants {
-            uint32_t faceSize;
-            uint32_t mipLevel;
-            uint32_t maxMipLevel;
-            float roughness;
-        } push{
+        PushConstants push{
             .faceSize = currentMipSize,
             .mipLevel = level,
             .maxMipLevel = mipLevels,

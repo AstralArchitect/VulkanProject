@@ -85,7 +85,7 @@ static const float linear = 0.09f;
 static const float quadratic = 0.032f;
 static const float PI = 3.14159265359;
 static const float EPSILON = 0.001f;
-static const int SHADOW_CONE_SAMPLES = 8;
+static const int SHADOW_CONE_SAMPLES = 1;
 static const float SUN_CONE_ANGLE = 0.06f; // ~3.5 degrés d'angle pour le cône solaire (ombres douces)
 static const float rtaoMaxDist = 3.0;
 
@@ -360,7 +360,7 @@ float3 pbr(float3 P, float3 N, float3 albedoFactor, float metallicFactor, float 
 
     float cloudShadow = calculateCloudShadow(P, sunDir, camera.time);
 
-    if (numShadowSamples > 1 && NdotL > 0.001 && cloudShadow > 0.001) {
+    if (numShadowSamples >= 1 && NdotL > 0.001 && cloudShadow > 0.001) {
         float3 accumShadow = float3(0.0);
         
         float3 T_sun, B_sun;

@@ -283,6 +283,7 @@ namespace VulkanUtils {
         vk::raii::Image image = nullptr;
         vk::raii::DeviceMemory imageMemory = nullptr;
         vk::raii::ImageView imageView = nullptr;
+        vk::raii::ImageView mip0CubeView = nullptr;
         vk::raii::Sampler sampler = nullptr;
 
         // Vues de stockage 2DArray par Mip Level pour le Compute Shader
